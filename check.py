@@ -96,8 +96,10 @@ def check_find_race():
     spain = race("14", "Spanish Grand Prix", "2026-09-13", "13:00:00Z")
     bcn = race("7", "Barcelona Grand Prix", "2026-06-14", "13:00:00Z")
     china = race("2", "Chinese Grand Prix", "2026-03-15", "07:00:00Z")
-    races = [china, bcn, spain, BAKU]
-    cases = {"巴库": BAKU, " 西班牙 ": spain, "上海": china, "巴塞罗那": bcn,
+    monza = race("13", "Italian Grand Prix", "2026-09-06", "13:00:00Z")
+    spa = race("10", "Belgian Grand Prix", "2026-07-19", "13:00:00Z")
+    races = [china, bcn, spain, BAKU, monza, spa]
+    cases = {"蒙扎": monza, "Monza": monza, "斯帕": spa, "SPA结果": spa, "蒙特梅罗": bcn,"巴库": BAKU, " 西班牙 ": spain, "上海": china, "巴塞罗那": bcn,
              "阿塞拜疆大奖赛": BAKU, "R7": bcn, "你好": None}
     for text, want in cases.items():
         assert f1.find_race(text, races) is want, text
