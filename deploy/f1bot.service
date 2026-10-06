@@ -1,0 +1,14 @@
+[Unit]
+Description=F1 QQ group bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=f1bot
+WorkingDirectory=/opt/f1bot
+ExecStart=/opt/f1bot/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

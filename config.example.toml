@@ -1,0 +1,4 @@
+appid = "你的AppID"
+secret = "你的AppSecret"
+# 每节开始前多少分钟提醒，可写多个，例如 [30, 10]
+remind_minutes = [30]
