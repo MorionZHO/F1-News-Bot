@@ -16,15 +16,16 @@ HELP = (
     "F1 赛事助手，@我并发送：\n"
     "下一场 / 赛程：最近比赛周时间表\n"
     "赛历：全年赛程\n"
+    "站名/城市/国家（如 阿布扎比、巴库、上海）：该站比赛周时间表\n"
     "车手积分 / 车队积分：积分榜\n"
-    "结果：最近一场正赛结果\n"
+    "结果：最近一场正赛结果；加站名（如 比利时结果、斯帕正赛）查指定一站\n"
     "订阅 / 退订：开关本群自动推送"
 )
 COMMANDS = [  # 顺序即匹配优先级
     ("退订", "unsub"), ("取消", "unsub"), ("订阅", "sub"), ("帮助", "help"),
     ("车队", "constructor"), ("制造商", "constructor"), ("车手", "driver"),
     ("积分", "driver"), ("排名", "driver"), ("榜", "driver"),
-    ("结果", "result"), ("上一场", "result"), ("上一站", "result"), ("成绩", "result"),
+    ("结果", "result"), ("上一场", "result"), ("上一站", "result"), ("成绩", "result"), ("正赛", "result"),
     ("赛历", "calendar"), ("全年", "calendar"), ("赛季", "calendar"),
     ("下一场", "next"), ("下一站", "next"), ("赛程", "next"), ("时间", "next"), ("日程", "next"),
 ]
@@ -66,20 +67,35 @@ class Bot(botpy.Client):
         log.info("at message from group %s: %r", gid, message.content)
         self.state.register(gid)
         try:
-            reply = await self.answer(parse(message.content), gid)
+            reply = await self.answer(message.content, gid)
         except Exception:
             log.exception("command failed")
             reply = NO_DATA
         await message.reply(msg_type=0, content=reply)
 
-    async def answer(self, cmd: str, gid: str) -> str:
+    async def answer(self, text: str, gid: str) -> str:
+        cmd = parse(text)
         if cmd in ("sub", "unsub"):
             self.state.set_flag(gid, sub=(cmd == "sub"))
             return "已开启本群自动推送。" if cmd == "sub" else "已关闭本群自动推送。"
-        return await answer_query(cmd)
+        return await answer_query(cmd, text)
 
 
-async def answer_query(cmd: str) -> str:
+async def race_result(race: dict) -> str:
+    res = await f1.fetch_results(race["round"])
+    if res:
+        return f1.format_results(res)
+    pending = f1.race_start(race) + f1.RACE_LEN > datetime.now(timezone.utc)
+    note = "该比赛还没进行（或尚未开始），以下是时间安排：" if pending else "该比赛已结束，但结果暂未更新，请稍后再试。以下是时间安排："
+    return f1.format_weekend(race, note + "\n")
+
+
+async def answer_query(cmd: str, text: str = "") -> str:
+    race = f1.find_race(text, f1.load_races())
+    if race and cmd == "result":
+        return await race_result(race)
+    if race:
+        return f1.format_weekend(race)
     if cmd == "help":
         return HELP
     if cmd in ("driver", "constructor"):

@@ -39,6 +39,31 @@ GP_NAMES = {
     "Bahrain Grand Prix in Malaysia": "巴林大奖赛",
     "Abu Dhabi Grand Prix": "阿布扎比大奖赛",
 }
+GP_ALIASES = {  # 模糊查询用：国家 / 城市 / 赛道别名，键为接口 raceName
+    "Australian Grand Prix": ["澳大利亚", "澳洲", "墨尔本", "阿尔伯特公园"],
+    "Chinese Grand Prix": ["中国", "上海"],
+    "Japanese Grand Prix": ["日本", "铃鹿"],
+    "Miami Grand Prix": ["迈阿密"],
+    "Canadian Grand Prix": ["加拿大", "蒙特利尔"],
+    "Monaco Grand Prix": ["摩纳哥", "蒙特卡洛"],
+    "Barcelona Grand Prix": ["巴塞罗那", "加泰罗尼亚"],
+    "Austrian Grand Prix": ["奥地利", "红牛环", "斯皮尔堡"],
+    "British Grand Prix": ["英国", "银石", "银石赛道"],
+    "Belgian Grand Prix": ["比利时", "斯帕", "spa"],
+    "Hungarian Grand Prix": ["匈牙利", "布达佩斯"],
+    "Dutch Grand Prix": ["荷兰", "赞德福特"],
+    "Italian Grand Prix": ["意大利", "蒙扎", "蒙札"],
+    "Spanish Grand Prix": ["西班牙", "马德里"],
+    "Azerbaijan Grand Prix": ["阿塞拜疆", "巴库"],
+    "Singapore Grand Prix": ["新加坡", "滨海湾"],
+    "United States Grand Prix": ["美国", "奥斯汀", "美洲赛道"],
+    "Mexico City Grand Prix": ["墨西哥", "罗德里格斯"],
+    "Brazilian Grand Prix": ["巴西", "圣保罗", "英特拉格斯", "因特拉格斯"],
+    "Las Vegas Grand Prix": ["拉斯维加斯", "维加斯"],
+    "Qatar Grand Prix": ["卡塔尔", "多哈", "洛塞尔"],
+    "Bahrain Grand Prix in Malaysia": ["巴林", "萨基尔", "麦纳麦"],
+    "Abu Dhabi Grand Prix": ["阿布扎比", "阿联酋", "亚斯码头", "亚斯岛"],
+}
 DRIVER_NAMES = {
     "Antonelli": "安东内利", "Russell": "拉塞尔", "Hamilton": "汉密尔顿", "Norris": "诺里斯",
     "Leclerc": "勒克莱尔", "Verstappen": "维斯塔潘", "Piastri": "皮亚斯特里", "Hadjar": "哈贾尔",
@@ -118,6 +143,18 @@ def load_races() -> list[dict]:
 
 def next_race(races: list[dict], now: datetime) -> dict | None:
     return next((r for r in races if race_start(r) + RACE_LEN > now), None)
+
+
+def find_race(text: str, races: list[dict]) -> dict | None:
+    """按别名 / 中文站名 / 站序号（如 R23）模糊匹配赛历中的某一站；取命中的最长关键词。"""
+    text = text.lower()
+    best, best_len = None, 0
+    for r in races:
+        keys = GP_ALIASES.get(r["raceName"], []) + [gp_name(r).removesuffix("大奖赛"), f"r{r['round']}"]
+        for k in keys:
+            if k.lower() in text and len(k) > best_len:
+                best, best_len = r, len(k)
+    return best
 
 
 def format_weekend(race: dict, head: str = "") -> str:
