@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,6 +39,9 @@ GP_NAMES = {
     "Qatar Grand Prix": "卡塔尔大奖赛",
     "Bahrain Grand Prix in Malaysia": "巴林大奖赛",
     "Abu Dhabi Grand Prix": "阿布扎比大奖赛",
+    "Malaysian Grand Prix": "马来西亚大奖赛",
+    "Styrian Grand Prix": "施蒂利亚大奖赛",
+    "70th Anniversary Grand Prix": "70周年纪念大奖赛",
 }
 GP_ALIASES = {  # 模糊查询用：国家 / 城市 / 赛道别名，键为接口 raceName
     "Australian Grand Prix": ["澳大利亚", "澳洲", "墨尔本", "阿尔伯特公园", "albert park"],
@@ -71,6 +75,7 @@ DRIVER_NAMES = {
     "Bearman": "贝尔曼", "Bortoleto": "博尔托莱托", "Hülkenberg": "霍肯伯格", "Ocon": "奥康",
     "Sainz": "塞恩斯", "Albon": "阿尔本", "Alonso": "阿隆索", "Tsunoda": "角田裕毅",
     "Stroll": "斯特罗尔", "Bottas": "博塔斯", "Pérez": "佩雷兹",
+    "Vettel": "维特尔", "Räikkönen": "莱科宁", "Ricciardo": "里卡多", "Rosberg": "罗斯伯格",
 }
 TEAM_NAMES = {
     "Mercedes": "梅奔", "Ferrari": "法拉利", "McLaren": "迈凯轮", "Red Bull": "红牛",
@@ -204,6 +209,27 @@ async def _latest_teams(round_: str) -> dict:
     """driverId -> 最近一站实际代表的车队。积分榜里 Constructors 的顺序不可靠，不能直接取最后一个。"""
     race = await fetch_session(round_, "race")
     return {r["Driver"]["driverId"]: r["Constructor"] for r in race["Results"]} if race else {}
+
+
+async def fetch_winners(circuit_id: str) -> list[dict] | None:
+    """该赛道历届正赛冠军（按年份升序）；缓存 12 小时内直接用，避免触发接口限频。"""
+    cache = f"winners-{circuit_id}.json"
+    path = DATA / cache
+    fresh = path.exists() and time.time() - path.stat().st_mtime < 12 * 3600
+    # ponytail: limit=100 足够，现役赛道最多约 75 届
+    data = _read(path) if fresh else await _fetch(f"{API}/circuits/{circuit_id}/results/1.json?limit=100", cache)
+    return data["MRData"]["RaceTable"]["Races"] if data else None
+
+
+def format_winners(race: dict, winners: list[dict], n: int = 5) -> str:
+    if not winners:
+        return "本赛道此前未举办过F1大奖赛。"
+    lines = [f"本赛道近{min(n, len(winners))}届冠军："]
+    for w in reversed(winners[-n:]):
+        r = w["Results"][0]
+        other = f" [{gp_name(w)}]" if w["raceName"] != race["raceName"] else ""
+        lines.append(f"{w['season']} {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）{other}")
+    return "\n".join(lines)
 
 
 def driver_name(d: dict) -> str:

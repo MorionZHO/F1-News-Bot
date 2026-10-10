@@ -28,6 +28,7 @@ class Task:
     when: datetime
     until: datetime
     text: str
+    race: dict | None = None  # 仅比赛周预告：发送时附上该赛道历届冠军
 
 
 class State:
@@ -74,7 +75,7 @@ def preview_time(race: dict) -> datetime:
 def build_tasks(race: dict, remind_minutes: list[int]) -> list[Task]:
     rid, sess = f"{race['season']}-{race['round']}", f1.sessions(race)
     tasks = [Task(f"{rid}-preview", preview_time(race), sess[0][1],
-                  f1.format_weekend(race, "本周比赛周：") )]
+                  f1.format_weekend(race, "本周比赛周："), race)]
     for name, start in sess:
         for m in remind_minutes:
             text = f1.format_reminder(race, name, start, m)
@@ -125,6 +126,14 @@ async def push_all(state: State, key: str, text: str, send) -> None:
         await asyncio.sleep(SEND_GAP_SECONDS)
 
 
+async def with_winners(t: Task) -> str:
+    """冠军数据取不到时只发时间表，不影响预告本身。"""
+    if not t.race:
+        return t.text
+    winners = await f1.fetch_winners(t.race["Circuit"]["circuitId"])
+    return t.text if winners is None else f"{t.text}\n\n{f1.format_winners(t.race, winners)}"
+
+
 async def poll_result(race: dict, kind: str, key: str, state: State, send) -> None:
     result = await f1.fetch_session(race["round"], kind)
     if not result:
@@ -148,7 +157,7 @@ async def run(cfg: dict, state: State, send) -> None:
                 last_refresh = now
             races = f1.load_races()
             for t in due_tasks(races, now, cfg["remind_minutes"], state):
-                await push_all(state, t.key, t.text, send)
+                await push_all(state, t.key, await with_winners(t), send)
             for race in races:
                 for kind, key, n in due_attempts(race, now, state, tried):
                     tried.add((key, n))

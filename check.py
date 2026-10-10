@@ -89,7 +89,8 @@ def check_parse():
              "车队": "constructor", "车队积分": "constructor", "车队排名": "constructor",
              "车队积分榜": "constructor", "取消订阅": "unsub", "下一站": "next",
              "斯帕排位": "qualifying", "排位结果": "qualifying", "迈阿密冲刺赛结果": "sprint",
-             "冲刺排位": "sprint_q", "比利时正赛": "result"}
+             "冲刺排位": "sprint_q", "比利时正赛": "result", "斯帕冠军": "winners",
+             "蒙扎历届冠军": "winners", "往届": "winners"}
     for text, cmd in cases.items():
         assert main.parse(text) == cmd, (text, main.parse(text))
 
@@ -107,8 +108,21 @@ def check_find_race():
         assert f1.find_race(text, races) is want, text
 
 
+def check_winners():
+    def win(season, name, family):
+        return {"season": season, "raceName": name, "Results": [{
+            "Driver": {"givenName": "", "familyName": family}, "Constructor": {"name": "Red Bull"}}]}
+    ws = [win(str(y), "Malaysian Grand Prix", "Vettel") for y in range(2010, 2017)]
+    ws.append(win("2026", "Bahrain Grand Prix in Malaysia", "Verstappen"))
+    lines = f1.format_winners(race("16", "Bahrain Grand Prix in Malaysia", "2026-10-04", "07:00:00Z"), ws).split("\n")
+    assert lines[0] == "本赛道近5届冠军：" and len(lines) == 6, lines
+    assert lines[1] == "2026 维斯塔潘（红牛）", lines[1]  # 最新在前，同名站不标注
+    assert lines[2] == "2016 维特尔（红牛） [马来西亚大奖赛]", lines[2]
+    assert f1.format_winners(BAKU, []) == "本赛道此前未举办过F1大奖赛。"
+
+
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_result_window, check_parse, check_find_race):
+               check_dedupe_and_catchup, check_result_window, check_parse, check_find_race, check_winners):
         fn()
     print("OK")

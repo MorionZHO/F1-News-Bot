@@ -20,6 +20,7 @@ HELP = (
     "车手积分 / 车队积分：积分榜\n"
     "结果：最近一场正赛结果；加站名（如 比利时结果、斯帕正赛）查指定一站\n"
     "排位 / 冲刺：最近一场排位赛 / 冲刺赛结果；加站名（如 斯帕排位、迈阿密冲刺）查指定一站\n"
+    "站名 + 冠军 / 历届（如 斯帕冠军、蒙扎历届）：该赛道近5届冠军\n"
     "订阅 / 退订：开关本群自动推送"
 )
 COMMANDS = [  # 顺序即匹配优先级
@@ -29,6 +30,7 @@ COMMANDS = [  # 顺序即匹配优先级
     ("冲刺排位", "sprint_q"), ("冲刺", "sprint"), ("排位", "qualifying"),
     ("结果", "result"), ("上一场", "result"), ("上一站", "result"), ("成绩", "result"), ("正赛", "result"),
     ("赛历", "calendar"), ("全年", "calendar"), ("赛季", "calendar"),
+    ("冠军", "winners"), ("历届", "winners"), ("往届", "winners"), ("赛道", "winners"),
     ("下一场", "next"), ("下一站", "next"), ("赛程", "next"), ("时间", "next"), ("日程", "next"),
 ]
 NO_DATA = "数据源暂时不可用，请稍后再试。"
@@ -98,6 +100,15 @@ async def race_result(race: dict, kind: str) -> str:
     return f1.format_weekend(race, note + "\n")
 
 
+async def circuit_winners(race: dict | None) -> str:
+    if not race:
+        return "请带上站名，例如：斯帕冠军、蒙扎历届。"
+    winners = await f1.fetch_winners(race["Circuit"]["circuitId"])
+    if winners is None:
+        return NO_DATA
+    return f"第{race['round']}站 {f1.gp_name(race)}\n{f1.format_winners(race, winners)}"
+
+
 def session_end(race: dict, kind: str) -> datetime:
     field, length, _ = push.RESULT_KINDS[kind]
     return (f1.to_utc(**race[field]) if field else f1.race_start(race)) + length
@@ -116,6 +127,8 @@ async def answer_query(cmd: str, text: str = "") -> str:
     race, kind = f1.find_race(text, races), SESSION_CMDS.get(cmd)
     if race and kind:
         return await race_result(race, kind)
+    if cmd == "winners":
+        return await circuit_winners(race)
     if race:
         return f1.format_weekend(race)
     if cmd == "help":
