@@ -53,12 +53,23 @@ def check_dedupe_and_catchup():
         st.register("g1")
         t0 = utc("2026-10-11T11:30:00")  # 正赛前 30 分钟
         due = push.due_tasks([SINGAPORE], t0 + timedelta(minutes=5), [30], st)
-        assert [t.key for t in due] == ["2026-17-正赛 Race-30"], due
+        assert [t.key for t in due] == ["2026-17-正赛 Race-30-20261011T1200"], due
         st.sent[due[0].key] = ["g1"]
         assert not push.due_tasks([SINGAPORE], t0 + timedelta(minutes=5), [30], st)
         assert not push.due_tasks([SINGAPORE], t0 + timedelta(minutes=11), [30], st)
+        # 正赛推迟 1 小时：已发过的旧提醒不挡新时间的提醒
+        moved = dict(SINGAPORE, time="13:00:00Z")
+        due = push.due_tasks([moved], t0 + timedelta(hours=1, minutes=5), [30], st)
+        assert [t.key for t in due] == ["2026-17-正赛 Race-30-20261011T1300"], due
         st.groups["g1"]["sub"] = False
         assert not st.targets("any-key")
+
+
+def check_refresh_interval():
+    races = [SINGAPORE, AUSTIN]  # 新加坡正赛 10-11 12:00 UTC
+    assert push.refresh_interval(races, utc("2026-10-07T12:00:00")) == timedelta(hours=3)  # 正赛前 4 天
+    assert push.refresh_interval(races, utc("2026-10-12T12:00:00")) == timedelta(hours=3)  # 正赛后 1 天
+    assert push.refresh_interval(races, utc("2026-10-15T12:00:00")) == timedelta(hours=12)
 
 
 def check_result_window():
@@ -123,6 +134,6 @@ def check_winners():
 
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_result_window, check_parse, check_find_race, check_winners):
+               check_dedupe_and_catchup, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners):
         fn()
     print("OK")

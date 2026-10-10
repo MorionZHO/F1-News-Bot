@@ -19,6 +19,7 @@ RESULT_KINDS = {
     "race": (None, timedelta(hours=2), (6, 12, 24)),
 }
 TICK_SECONDS = 30
+RACE_WEEK = (timedelta(days=4), timedelta(days=1))  # 正赛前 4 天到正赛后 1 天算比赛周（覆盖周四预告到周一）
 SEND_GAP_SECONDS = 2
 
 
@@ -73,13 +74,14 @@ def preview_time(race: dict) -> datetime:
 
 
 def build_tasks(race: dict, remind_minutes: list[int]) -> list[Task]:
+    # 记录 key 带上节次开始时间：赛程调整后视为新任务，按新时间重新提醒
     rid, sess = f"{race['season']}-{race['round']}", f1.sessions(race)
-    tasks = [Task(f"{rid}-preview", preview_time(race), sess[0][1],
+    tasks = [Task(f"{rid}-preview-{sess[0][1]:%Y%m%dT%H%M}", preview_time(race), sess[0][1],
                   f1.format_weekend(race, "本周比赛周："), race)]
     for name, start in sess:
         for m in remind_minutes:
             text = f1.format_reminder(race, name, start, m)
-            tasks.append(Task(f"{rid}-{name}-{m}", start - timedelta(minutes=m),
+            tasks.append(Task(f"{rid}-{name}-{m}-{start:%Y%m%dT%H%M}", start - timedelta(minutes=m),
                               start - timedelta(minutes=m) + GRACE, text))
     return tasks
 
@@ -146,13 +148,19 @@ async def poll_result(race: dict, kind: str, key: str, state: State, send) -> No
     await push_all(state, key, text, send)
 
 
+def refresh_interval(races: list[dict], now: datetime) -> timedelta:
+    before, after = RACE_WEEK
+    in_week = any(f1.race_start(r) - before <= now <= f1.race_start(r) + after for r in races)
+    return timedelta(hours=3 if in_week else 12)
+
+
 async def run(cfg: dict, state: State, send) -> None:
-    """主循环：每 30 秒检查一次到期任务；赛历缓存超过 12 小时则刷新。"""
+    """主循环：每 30 秒检查一次到期任务；赛历缓存比赛周超过 3 小时、平时超过 12 小时则刷新。"""
     tried, last_refresh = set(), None
     while True:
         now = datetime.now(timezone.utc)
         try:
-            if last_refresh is None or now - last_refresh > timedelta(hours=12):
+            if last_refresh is None or now - last_refresh > refresh_interval(f1.load_races(), now):
                 await f1.refresh_schedule()
                 last_refresh = now
             races = f1.load_races()
