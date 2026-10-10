@@ -87,7 +87,9 @@ def check_parse():
              "订阅": "sub", "测试推送": "help", "上一场": "result", "赛历": "calendar", "你好": "help",
              "车手排名": "driver", "车手积分榜": "driver", "积分榜": "driver", "排名": "driver",
              "车队": "constructor", "车队积分": "constructor", "车队排名": "constructor",
-             "车队积分榜": "constructor", "取消订阅": "unsub", "下一站": "next"}
+             "车队积分榜": "constructor", "取消订阅": "unsub", "下一站": "next",
+             "斯帕排位": "qualifying", "排位结果": "qualifying", "迈阿密冲刺赛结果": "sprint",
+             "冲刺排位": "sprint_q", "比利时正赛": "result"}
     for text, cmd in cases.items():
         assert main.parse(text) == cmd, (text, main.parse(text))
 

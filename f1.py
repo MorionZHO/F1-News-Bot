@@ -190,10 +190,6 @@ async def fetch_session(round_: str, kind: str):
     return races[0]
 
 
-async def fetch_results(round_: str):
-    return await fetch_session(round_, "race")
-
-
 async def fetch_standings(kind: str):
     """kind: driver 或 constructor。"""
     data = await _fetch(f"{API}/current/{kind}standings.json", f"standings-{kind}.json")
@@ -236,6 +232,12 @@ def format_qualifying(race: dict, top: int = 10) -> str:
             r.get(q) for q in ("Q1", "Q2", "Q3")) else "无成绩"
         lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）{best}")
     return "\n".join(lines)
+
+
+def format_session(result: dict, kind: str) -> str:
+    if kind == "qualifying":
+        return format_qualifying(result)
+    return format_results(result, title="冲刺赛" if kind == "sprint" else "正赛")
 
 
 def format_standings(st: dict, kind: str, top: int | None = None) -> str:

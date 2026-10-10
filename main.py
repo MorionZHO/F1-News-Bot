@@ -19,17 +19,21 @@ HELP = (
     "站名/城市/国家（如 阿布扎比、巴库、上海）：该站比赛周时间表\n"
     "车手积分 / 车队积分：积分榜\n"
     "结果：最近一场正赛结果；加站名（如 比利时结果、斯帕正赛）查指定一站\n"
+    "排位 / 冲刺：最近一场排位赛 / 冲刺赛结果；加站名（如 斯帕排位、迈阿密冲刺）查指定一站\n"
     "订阅 / 退订：开关本群自动推送"
 )
 COMMANDS = [  # 顺序即匹配优先级
     ("退订", "unsub"), ("取消", "unsub"), ("订阅", "sub"), ("帮助", "help"),
     ("车队", "constructor"), ("制造商", "constructor"), ("车手", "driver"),
     ("积分", "driver"), ("排名", "driver"), ("榜", "driver"),
+    ("冲刺排位", "sprint_q"), ("冲刺", "sprint"), ("排位", "qualifying"),
     ("结果", "result"), ("上一场", "result"), ("上一站", "result"), ("成绩", "result"), ("正赛", "result"),
     ("赛历", "calendar"), ("全年", "calendar"), ("赛季", "calendar"),
     ("下一场", "next"), ("下一站", "next"), ("赛程", "next"), ("时间", "next"), ("日程", "next"),
 ]
 NO_DATA = "数据源暂时不可用，请稍后再试。"
+SESSION_CMDS = {"result": "race", "qualifying": "qualifying", "sprint": "sprint"}  # 指令 -> 结果类型
+SESSION_LABELS = {"race": "正赛", "qualifying": "排位赛", "sprint": "冲刺赛"}
 
 def parse(text: str) -> str:
     text = text.strip()
@@ -81,19 +85,37 @@ class Bot(botpy.Client):
         return await answer_query(cmd, text)
 
 
-async def race_result(race: dict) -> str:
-    res = await f1.fetch_results(race["round"])
+async def race_result(race: dict, kind: str) -> str:
+    field = push.RESULT_KINDS[kind][0]
+    if field and field not in race:
+        return f1.format_weekend(race, f"本站没有{SESSION_LABELS[kind]}，以下是时间安排：\n")
+    res = await f1.fetch_session(race["round"], kind)
     if res:
-        return f1.format_results(res)
-    pending = f1.race_start(race) + f1.RACE_LEN > datetime.now(timezone.utc)
-    note = "该比赛还没进行（或尚未开始），以下是时间安排：" if pending else "该比赛已结束，但结果暂未更新，请稍后再试。以下是时间安排："
+        return f1.format_session(res, kind)
+    label = SESSION_LABELS[kind]
+    note = (f"本站{label}还没进行（或尚未开始），以下是时间安排：" if session_end(race, kind) > datetime.now(timezone.utc)
+            else f"本站{label}已结束，但结果暂未更新，请稍后再试。以下是时间安排：")
     return f1.format_weekend(race, note + "\n")
 
 
+def session_end(race: dict, kind: str) -> datetime:
+    field, length, _ = push.RESULT_KINDS[kind]
+    return (f1.to_utc(**race[field]) if field else f1.race_start(race)) + length
+
+
+def last_done(races: list[dict], kind: str) -> dict | None:
+    field, now = push.RESULT_KINDS[kind][0], datetime.now(timezone.utc)
+    done = [r for r in races if (not field or field in r) and session_end(r, kind) <= now]
+    return done[-1] if done else None
+
+
 async def answer_query(cmd: str, text: str = "") -> str:
-    race = f1.find_race(text, f1.load_races())
-    if race and cmd == "result":
-        return await race_result(race)
+    if cmd == "sprint_q":
+        return "暂无冲刺排位赛的数据源，可查询冲刺赛、排位赛或正赛结果。"
+    races = f1.load_races()
+    race, kind = f1.find_race(text, races), SESSION_CMDS.get(cmd)
+    if race and kind:
+        return await race_result(race, kind)
     if race:
         return f1.format_weekend(race)
     if cmd == "help":
@@ -101,10 +123,9 @@ async def answer_query(cmd: str, text: str = "") -> str:
     if cmd in ("driver", "constructor"):
         st = await f1.fetch_standings(cmd)
         return f1.format_standings(st, cmd) if st else NO_DATA
-    if cmd == "result":
-        res = await f1.fetch_results("last")
-        return f1.format_results(res) if res else "暂无已完赛的正赛结果。"
-    races = f1.load_races()
+    if kind:
+        race = last_done(races, kind)
+        return await race_result(race, kind) if race else f"暂无已完赛的{SESSION_LABELS[kind]}。"
     if not races:
         return NO_DATA
     if cmd == "calendar":

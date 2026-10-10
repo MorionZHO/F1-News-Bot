@@ -129,10 +129,7 @@ async def poll_result(race: dict, kind: str, key: str, state: State, send) -> No
     result = await f1.fetch_session(race["round"], kind)
     if not result:
         return
-    if kind == "qualifying":
-        text = f1.format_qualifying(result)
-    else:
-        text = f1.format_results(result, title="冲刺赛" if kind == "sprint" else "正赛")
+    text = f1.format_session(result, kind)
     if kind == "race":
         standings = await f1.fetch_standings("driver")
         if standings:
