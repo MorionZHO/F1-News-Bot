@@ -162,7 +162,7 @@ def check_title_bruteforce():
         nxt = race("1", "X", "2026-01-01", "00:00:00Z", **({"Sprint": ("2026-01-01", "00:00:00Z")} if sprint else {}))
         later = [race("2", "X", "2026-01-01", "00:00:00Z", **({"Sprint": ("2026-01-01", "00:00:00Z")} if h else {}))
                  for h in after]
-        got = [(pp, int(c[0].split("第")[1].split("名")[0]) if c else None)
+        got = [(pp, (11 if c[0].endswith("未得分") else int(c[0].split("第")[1].split("名")[0])) if c else None)
                for pp, c in f1.clinch_requirements(me, [me, rv], nxt, later)]
         want = _brute(me_pts, me_w, r_pts, r_w, sprint, after)
         assert got == want, (me_pts, me_w, r_pts, r_w, sprint, after, got, want)
@@ -185,6 +185,11 @@ def check_title():
     assert "已提前夺冠" in f1.format_title_outlook(late, left[-1:])
     assert "已无夺冠可能" in f1.format_title_outlook(late, left[-1:], rows[3])
     assert f1.find_driver("ant夺冠", rows) is rows[0]
+    # 领先更多时：条件相同的相邻名次合并，“第11名”显示为未得分
+    lead = f1.format_title_outlook(dict(st, DriverStandings=[_row("ANT", "Antonelli", 380, 8)] + rows[1:]), left)
+    assert "· 第1-5名：无需对手配合\n· 第6-9名：拉塞尔第2名或更后\n· 第10名及更后：拉塞尔第3名或更后" in lead, lead
+    lead = f1.format_title_outlook(dict(st, DriverStandings=[_row("ANT", "Antonelli", 360, 8)] + rows[1:]), left)
+    assert "· 第8名：拉塞尔未得分、" in lead and "第11名" not in lead, lead
 
 
 def check_clinch_preview():

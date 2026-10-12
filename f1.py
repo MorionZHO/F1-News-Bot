@@ -312,7 +312,8 @@ def clinch_requirements(me: dict, rows: list[dict], nxt: dict, after: list[dict]
             if 11 in bad:  # 对手零分也挡不住，me 名次再靠后更不可能
                 return out
             if bad:
-                conds.append(f"{driver_name(r['Driver'])}第{max(bad) + 1}名或更后")
+                n = max(bad) + 1
+                conds.append(driver_name(r["Driver"]) + ("未得分" if n == 11 else f"第{n}名或更后"))
         out.append((p, conds))
     return out
 
@@ -327,7 +328,23 @@ SPRINT_NOTE = "（本站含冲刺赛，按最坏情况：本人0分、对手拿�
 
 
 def _req_lines(reqs: list) -> list[str]:
-    return [f"· {f'第{p}名' if p <= 10 else '未进前十'}：" + ("、".join(c) or "无需对手配合") for p, c in reqs]
+    """条件相同的相邻名次合并成一行，如“第6-9名”“第10名及更后”。"""
+    groups = []  # [起始名次, 结束名次, 条件]
+    for p, c in reqs:
+        if groups and groups[-1][2] == c:
+            groups[-1][1] = p
+        else:
+            groups.append([p, p, c])
+    lines = []
+    for a, b, c in groups:
+        if a == 11:
+            label = "未进前十"
+        elif b == 11:
+            label = f"第{a}名及更后"
+        else:
+            label = f"第{a}名" if a == b else f"第{a}-{b}名"
+        lines.append(f"· {label}：" + ("、".join(c) or "无需对手配合"))
+    return lines
 
 
 def _already_locked(reqs: list) -> bool:
