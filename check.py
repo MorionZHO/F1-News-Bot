@@ -101,7 +101,9 @@ def check_parse():
              "车队积分榜": "constructor", "取消订阅": "unsub", "下一站": "next",
              "斯帕排位": "qualifying", "排位结果": "qualifying", "迈阿密冲刺赛结果": "sprint",
              "冲刺排位": "sprint_q", "比利时正赛": "result", "斯帕冠军": "winners",
-             "蒙扎历届冠军": "winners", "往届": "winners"}
+             "蒙扎历届冠军": "winners", "往届": "winners", "ANT夺冠条件": "title", "WDC": "title",
+             "争冠形势": "title", "冠军条件": "title", "提前夺冠": "title", "锁定冠军条件": "title",
+             "WDC条件": "title", "拉塞尔夺冠条件": "title", "斯帕冠军": "winners", "积分": "driver"}
     for text, cmd in cases.items():
         assert main.parse(text) == cmd, (text, main.parse(text))
 
@@ -119,6 +121,101 @@ def check_find_race():
         assert f1.find_race(text, races) is want, text
 
 
+def _row(code, family, pts, wins):
+    return {"points": str(pts), "wins": str(wins), "Driver": {"code": code, "givenName": "", "familyName": family}}
+
+
+def _brute(me_pts, me_w, r_pts, r_w, sprint, after):
+    """穷举两人在本站冲刺赛和之后每个比赛周的全部名次组合，返回与 clinch_requirements 同格式的 [(p, 门槛名次)]。
+    判定按官方规则：总分高者胜；同分比正赛冠军数（冲刺赛不计）；冠军数也相同按未锁定。"""
+    def pairs(n):  # 两人名次组合，n+1 表示无积分（可并列）
+        return [(a, b) for a in range(1, n + 2) for b in range(1, n + 2) if a != b or a == n + 1]
+    sp = lambda pos: f1.SPRINT_POINTS[pos - 1] if pos <= len(f1.SPRINT_POINTS) else 0
+    race_d = {(f1.points_for(a) - f1.points_for(b), (a == 1) - (b == 1)) for a, b in pairs(10)}
+    sprint_d = {(sp(a) - sp(b), 0) for a, b in pairs(8)}
+    fut = {(0, 0)}  # (me 比对手多得的分, me 比对手多的正赛冠军)
+    for weekend in ([sprint_d] if sprint else []) + [d for has in after for d in ([race_d, sprint_d] if has else [race_d])]:
+        fut = {(d1 + d2, w1 + w2) for d1, w1 in fut for d2, w2 in weekend}
+    worst = {}
+    for d, w in fut:
+        worst[d] = min(w, worst.get(d, w))
+    out = []
+    for p in range(1, 12):
+        bad = [q for q in range(1, 12) if (q != p or p == 11) and not all(
+            g > 0 or (g == 0 and me_w + (p == 1) - r_w - (q == 1) + w > 0)
+            for d, w in worst.items() for g in [me_pts + f1.points_for(p) - r_pts - f1.points_for(q) + d])]
+        if 11 in bad:
+            break
+        out.append((p, max(bad) + 1 if bad else None))
+    return out
+
+
+def check_title_bruteforce():
+    import random
+    rnd = random.Random(0)
+    for _ in range(150):
+        after = [rnd.random() < 0.3 for _ in range(rnd.randint(0, 2))]  # 之后每站是否有冲刺赛
+        sprint = rnd.random() < 0.3
+        me_pts, me_w = rnd.randint(0, 150), rnd.randint(0, 6)
+        r_pts, r_w = max(0, me_pts - rnd.randint(-10, 90)), rnd.randint(0, 6)
+        me, rv = _row("AAA", "Me", me_pts, me_w), _row("BBB", "Rival", r_pts, r_w)
+        nxt = race("1", "X", "2026-01-01", "00:00:00Z", **({"Sprint": ("2026-01-01", "00:00:00Z")} if sprint else {}))
+        later = [race("2", "X", "2026-01-01", "00:00:00Z", **({"Sprint": ("2026-01-01", "00:00:00Z")} if h else {}))
+                 for h in after]
+        got = [(pp, int(c[0].split("第")[1].split("名")[0]) if c else None)
+               for pp, c in f1.clinch_requirements(me, [me, rv], nxt, later)]
+        want = _brute(me_pts, me_w, r_pts, r_w, sprint, after)
+        assert got == want, (me_pts, me_w, r_pts, r_w, sprint, after, got, want)
+
+
+def check_title():
+    rows = [_row("ANT", "Antonelli", 340, 8), _row("RUS", "Russell", 238, 3),
+            _row("HAM", "Hamilton", 229, 1), _row("VER", "Verstappen", 221, 2)]
+    st = {"round": "17", "DriverStandings": rows}
+    left = [race(str(r), "Spanish Grand Prix", "2026-11-01", "12:00:00Z") for r in range(18, 24)]  # 6 站无冲刺
+    out = f1.format_title_outlook(st, left)
+    # 赢下本站得 365；拉塞尔第 9（2 分）时同分 365，对手需后 5 站全胜才追平，冠军数 3+5=8 < 9，仍锁定
+    assert "· 第1名：拉塞尔第9名或更后、汉密尔顿第5名或更后" in out, out
+    assert "· 第2名" not in out and out.endswith("（同分按胜场数判定）"), out
+    few_wins = dict(st, DriverStandings=[_row("ANT", "Antonelli", 340, 3)] + rows[1:])
+    assert "拉塞尔第10名或更后" in f1.format_title_outlook(few_wins, left)  # 冠军数 4 < 8，同分不算锁定
+    sprint = [dict(left[0], Sprint={"date": "2026-10-24", "time": "09:00:00Z"})] + left[1:]
+    assert "拉塞尔第9名或更后" not in f1.format_title_outlook(st, sprint)  # 冲刺赛按最坏情况多算 8 分
+    late = dict(st, round="22")  # 只剩 1 站：340 > 238+25
+    assert "已提前夺冠" in f1.format_title_outlook(late, left[-1:])
+    assert "已无夺冠可能" in f1.format_title_outlook(late, left[-1:], rows[3])
+    assert f1.find_driver("ant夺冠", rows) is rows[0]
+
+
+def check_clinch_preview():
+    rows = [_row("ANT", "Antonelli", 340, 8), _row("RUS", "Russell", 238, 3),
+            _row("HAM", "Hamilton", 229, 1), _row("VER", "Verstappen", 221, 2)]
+    st = {"round": "17", "DriverStandings": rows}
+    left = [race(str(r), "Spanish Grand Prix", "2026-11-01", "12:00:00Z") for r in range(18, 24)]
+    pre = f1.format_clinch_preview(st, left, left[0])
+    assert pre.startswith("【争冠】\n安东内利本站锁定车手总冠军的条件：") and pre.endswith("（同分按胜场数判定）"), pre
+    assert f1.format_clinch_preview(dict(st, round="16"), left, left[0]) == ""  # 积分榜过期
+    season = [race(str(r), "Spanish Grand Prix", "2026-05-01", "12:00:00Z") for r in range(3, 24)]
+    assert f1.format_clinch_preview(dict(st, round="2"), season, season[0]) == ""  # 赛季前半段
+    # 最后一站：冠军已锁定，亚军在拉塞尔和汉密尔顿之间争
+    final = {"round": "22", "DriverStandings": [_row("ANT", "Antonelli", 400, 8), _row("RUS", "Russell", 300, 3),
+                                                _row("HAM", "Hamilton", 290, 1), _row("VER", "Verstappen", 200, 2)]}
+    pre = f1.format_clinch_preview(final, left, left[-1])
+    assert pre.startswith("【争冠】\n安东内利已锁定车手总冠军\n拉塞尔本站锁定车手总亚军的条件："), pre
+    assert "汉密尔顿本站锁定车手总亚军的条件：" in pre and "季军" not in pre, pre
+    # 冠亚已锁定，算季军
+    final["DriverStandings"][1] = _row("RUS", "Russell", 350, 3)
+    pre = f1.format_clinch_preview(final, left, left[-1])
+    assert "安东内利已锁定车手总冠军\n拉塞尔已锁定车手总亚军\n汉密尔顿已锁定车手总季军" not in pre
+    final["DriverStandings"][3] = _row("VER", "Verstappen", 280, 2)
+    pre = f1.format_clinch_preview(final, left, left[-1])
+    assert "拉塞尔已锁定车手总亚军\n汉密尔顿本站锁定车手总季军的条件：" in pre, pre
+    # 前三都已确定
+    final["DriverStandings"][3] = _row("VER", "Verstappen", 200, 2)
+    pre = f1.format_clinch_preview(final, left, left[-1])
+    assert pre == "【争冠】\n车手总排名前三已确定：冠军 安东内利、亚军 拉塞尔、季军 汉密尔顿", pre
+
+
 def check_winners():
     def win(season, name, family):
         return {"season": season, "raceName": name, "Results": [{
@@ -134,6 +231,6 @@ def check_winners():
 
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners):
+               check_dedupe_and_catchup, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_title, check_title_bruteforce, check_clinch_preview):
         fn()
     print("OK")

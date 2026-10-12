@@ -260,6 +260,135 @@ def format_qualifying(race: dict, top: int = 10) -> str:
     return "\n".join(lines)
 
 
+# ---- 争冠计算 ----
+# 规则依据：FIA 2026 F1 Regulations Section A，A2.2.1（正赛积分）、A2.2.2（冲刺赛积分）、A2.1.4（同分判定）。
+# 规则变更时需要修改的地方都标了「规则变更」，搜索这四个字即可：
+#   积分制度 -> RACE_POINTS / SPRINT_POINTS；最快圈加分恢复 -> weekend_max 与 clinch_requirements；
+#   冲刺赛赛制（场次、积分、是否计入同分判定）-> SPRINT_POINTS、weekend_max、clinch_requirements、_locked；
+#   同分判定规则 -> _locked。
+# ponytail: 本站按完整比赛距离积分计算；红旗缩短比赛（<75% 距离用缩短积分表）和并列名次平分积分不在考虑范围内。
+RACE_POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1]  # 规则变更：正赛积分表
+SPRINT_POINTS = [8, 7, 6, 5, 4, 3, 2, 1]  # 规则变更：冲刺赛积分表
+SPRINT_MAX = SPRINT_POINTS[0]
+TITLE_LABELS = ["车手总冠军", "车手总亚军", "车手总季军"]
+
+
+def points_for(pos: int) -> int:
+    return RACE_POINTS[pos - 1] if pos <= len(RACE_POINTS) else 0
+
+
+def weekend_max(race: dict) -> int:
+    """一个比赛周单人最多能拿的分。
+    规则变更：最快圈加分恢复则正赛部分 +1；冲刺赛场次或积分变化改这里。"""
+    return RACE_POINTS[0] + (SPRINT_MAX if "Sprint" in race else 0)
+
+
+def _locked(gap: int, rest: int, me_wins: int, rival_wins: int) -> bool:
+    """本站后领先 gap 分、之后最多还有 rest 分时，是否无论之后怎么跑都排在对手前面。
+    gap == rest 时对手只能靠之后每站满分（必然包揽之后全部正赛冠军）追平，此时比正赛冠军数，
+    rival_wins 已含这些冠军。gap < rest 时对手可以直接反超，不算锁定。
+    规则变更：同分判定改变（如冲刺赛冠军也计入）改这里和 clinch_requirements 的胜场计算。
+    ponytail: 冠军数也相同时要比亚军数，接口只给冠军数，按未锁定处理（偏保守）。"""
+    return gap > rest or (gap == rest and me_wins > rival_wins)
+
+
+def clinch_requirements(me: dict, rows: list[dict], nxt: dict, after: list[dict]) -> list:
+    """本站正赛 me 跑第 p 名（11 = 无积分）时，rows 里其他人各需落到第几名或更后，me 才能锁定排在他们所有人前面。
+    返回 [(p, [条件...]), ...]，只含能锁定的 p；名次越靠后越难锁定，所以一旦锁不住就停止。
+    本站冲刺赛按最坏情况：me 0 分、对手拿满。之后的比赛同样按 me 0 分、对手每站满分。
+    规则变更：最快圈加分恢复时，对手前十名的分数要 +1（me 按最坏情况不加）。"""
+    rest = sum(weekend_max(r) for r in after)
+    sprint_pts = SPRINT_MAX if "Sprint" in nxt else 0
+    me_pts, me_wins = int(me["points"]), int(me["wins"])  # 接口的 wins 只计正赛冠军，与同分判定口径一致
+    out = []
+    for p in range(1, 12):
+        conds = []
+        for r in rows:
+            if r is me:
+                continue
+            pts, wins = int(r["points"]) + sprint_pts, int(r["wins"]) + len(after)
+            bad = [q for q in range(1, 12) if (q != p or p == 11) and not _locked(
+                me_pts + points_for(p) - pts - points_for(q), rest, me_wins + (p == 1), wins + (q == 1))]
+            if 11 in bad:  # 对手零分也挡不住，me 名次再靠后更不可能
+                return out
+            if bad:
+                conds.append(f"{driver_name(r['Driver'])}第{max(bad) + 1}名或更后")
+        out.append((p, conds))
+    return out
+
+
+def find_driver(text: str, rows: list[dict]) -> dict | None:
+    low = text.lower()
+    return next((r for r in rows if r["Driver"]["code"].lower() in low or driver_name(r["Driver"]) in text), None)
+
+
+TITLE_NOTE = "（同分按胜场数判定）"
+SPRINT_NOTE = "（本站含冲刺赛，按最坏情况：本人0分、对手拿冲刺赛第1）"
+
+
+def _req_lines(reqs: list) -> list[str]:
+    return [f"· {f'第{p}名' if p <= 10 else '未进前十'}：" + ("、".join(c) or "无需对手配合") for p, c in reqs]
+
+
+def _already_locked(reqs: list) -> bool:
+    """本站零分且不看对手也能锁定，说明已经锁定。"""
+    return bool(reqs) and reqs[-1] == (11, [])
+
+
+def format_title_outlook(st: dict, races: list[dict], target: dict | None = None) -> str:
+    rows = st["DriverStandings"]
+    me = target or rows[0]
+    name, me_pts = driver_name(me["Driver"]), int(me["points"])
+    left = [r for r in races if int(r["round"]) > int(st["round"])]
+    max_all = sum(weekend_max(r) for r in left)
+    head = f"车手总冠军形势（第{st['round']}站后）\n{name} {me_pts}分，剩余{len(left)}站最多再得{max_all}分"
+    if not left:
+        return f"{head}\n本赛季已结束。"
+    reqs = clinch_requirements(me, rows, left[0], left[1:])
+    if _already_locked(reqs):
+        return f"{head}\n{name}已提前夺冠！"
+    if me_pts + max_all < max(int(r["points"]) for r in rows if r is not me):
+        return f"{head}\n{name}已无夺冠可能。"
+    lines = [head, f"下一站 {gp_name(left[0])}，{name}提前夺冠的条件："]
+    lines += _req_lines(reqs) or ["· 下一站无法提前锁定冠军"]
+    return "\n".join(lines + ([SPRINT_NOTE] if "Sprint" in left[0] else []) + [TITLE_NOTE])
+
+
+def _title_tiers(rows: list[dict], race: dict, after: list[dict]) -> tuple[list[dict], list[str]]:
+    """依次判断冠军、亚军、季军：已锁定的记下来，遇到第一个未锁定的名次就算本站锁定它的条件并停止。"""
+    locked, lines = [], []
+    for label in TITLE_LABELS:
+        pool = [r for r in rows if all(r is not x for x in locked)]
+        reqs = [(r, clinch_requirements(r, pool, race, after)) for r in pool]
+        done = next((r for r, q in reqs if _already_locked(q)), None)
+        if done:
+            locked.append(done)
+            continue
+        for r, q in reqs:
+            if q:
+                lines += [f"{driver_name(r['Driver'])}本站锁定{label}的条件："] + _req_lines(q)
+        break
+    return locked, lines
+
+
+def format_clinch_preview(st: dict, races: list[dict], race: dict) -> str:
+    """比赛周预告用：已锁定的冠/亚/季军和本站可能锁定下一个名次的条件；都没有时返回空串。
+    积分榜没更新到上一站时不判断，避免用过期数据。"""
+    if int(st["round"]) != int(race["round"]) - 1:
+        return ""
+    after = [r for r in races if int(r["round"]) > int(race["round"])]
+    locked, lines = _title_tiers(st["DriverStandings"], race, after)
+    names = [driver_name(r["Driver"]) for r in locked]
+    if len(locked) == len(TITLE_LABELS):
+        return "【争冠】\n车手总排名前三已确定：" + "、".join(f"{label[3:]} {n}" for label, n in zip(TITLE_LABELS, names))
+    if not locked and not lines:
+        return ""
+    out = ["【争冠】"] + [f"{n}已锁定{label}" for label, n in zip(TITLE_LABELS, names)] + lines
+    if lines:
+        out += ([SPRINT_NOTE] if "Sprint" in race else []) + [TITLE_NOTE]
+    return "\n".join(out)
+
+
 def format_session(result: dict, kind: str) -> str:
     if kind == "qualifying":
         return format_qualifying(result)

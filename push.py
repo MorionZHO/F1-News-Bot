@@ -19,6 +19,7 @@ RESULT_KINDS = {
     "race": (None, timedelta(hours=2), (6, 12, 24)),
 }
 TICK_SECONDS = 30
+_EXTRAS: dict[str, str] = {}  # 预告 key -> 附加内容后的完整文本
 RACE_WEEK = (timedelta(days=4), timedelta(days=1))  # 正赛前 4 天到正赛后 1 天算比赛周（覆盖周四预告到周一）
 SEND_GAP_SECONDS = 2
 
@@ -29,7 +30,7 @@ class Task:
     when: datetime
     until: datetime
     text: str
-    race: dict | None = None  # 仅比赛周预告：发送时附上该赛道历届冠军
+    race: dict | None = None  # 仅比赛周预告：发送时附上该赛道历届冠军和争冠形势
 
 
 class State:
@@ -128,12 +129,21 @@ async def push_all(state: State, key: str, text: str, send) -> None:
         await asyncio.sleep(SEND_GAP_SECONDS)
 
 
-async def with_winners(t: Task) -> str:
-    """冠军数据取不到时只发时间表，不影响预告本身。"""
+async def with_extras(t: Task, races: list[dict]) -> str:
+    """比赛周预告依次附赛道历届冠军、争冠形势；取不到数据就略过该部分，不影响预告本身。"""
     if not t.race:
         return t.text
+    if t.key in _EXTRAS:  # 有群发送失败时每轮都会重试，避免每 30 秒重复请求接口
+        return _EXTRAS[t.key]
+    parts = [t.text]
     winners = await f1.fetch_winners(t.race["Circuit"]["circuitId"])
-    return t.text if winners is None else f"{t.text}\n\n{f1.format_winners(t.race, winners)}"
+    if winners is not None:
+        parts.append(f1.format_winners(t.race, winners))
+    st = await f1.fetch_standings("driver")
+    if st:
+        parts.append(f1.format_clinch_preview(st, races, t.race))
+    _EXTRAS[t.key] = "\n\n".join(p for p in parts if p)
+    return _EXTRAS[t.key]
 
 
 async def poll_result(race: dict, kind: str, key: str, state: State, send) -> None:
@@ -165,7 +175,7 @@ async def run(cfg: dict, state: State, send) -> None:
                 last_refresh = now
             races = f1.load_races()
             for t in due_tasks(races, now, cfg["remind_minutes"], state):
-                await push_all(state, t.key, await with_winners(t), send)
+                await push_all(state, t.key, await with_extras(t, races), send)
             for race in races:
                 for kind, key, n in due_attempts(race, now, state, tried):
                     tried.add((key, n))

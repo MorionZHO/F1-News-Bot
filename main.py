@@ -22,6 +22,7 @@ HELP = (  # 每行尽量不超过手机气泡一行宽（约 16 个汉字）
     "【成绩】\n"
     "结果　排位　冲刺\n"
     "车手积分　车队积分\n"
+    "夺冠条件 → 领跑者提前夺冠条件\n"
     "加站名查指定一站，例：斯帕排位\n"
     "\n"
     "【赛道】\n"
@@ -31,6 +32,9 @@ HELP = (  # 每行尽量不超过手机气泡一行宽（约 16 个汉字）
 )
 COMMANDS = [  # 顺序即匹配优先级
     ("退订", "unsub"), ("取消", "unsub"), ("订阅", "sub"), ("帮助", "help"),
+    # 争冠条件要排在“冠军”（历届冠军）之前，否则“冠军条件”会被当成查历届冠军
+    ("条件", "title"), ("夺冠", "title"), ("争冠", "title"), ("锁定", "title"), ("锁冠", "title"),
+    ("wdc", "title"),
     ("车队", "constructor"), ("制造商", "constructor"), ("车手", "driver"),
     ("积分", "driver"), ("排名", "driver"), ("榜", "driver"),
     ("冲刺排位", "sprint_q"), ("冲刺", "sprint"), ("排位", "qualifying"),
@@ -44,7 +48,7 @@ SESSION_CMDS = {"result": "race", "qualifying": "qualifying", "sprint": "sprint"
 SESSION_LABELS = {"race": "正赛", "qualifying": "排位赛", "sprint": "冲刺赛"}
 
 def parse(text: str) -> str:
-    text = text.strip()
+    text = text.strip().lower()
     return next((cmd for kw, cmd in COMMANDS if kw in text), "help")
 
 
@@ -115,6 +119,16 @@ async def circuit_winners(race: dict | None) -> str:
     return f"第{race['round']}站 {f1.gp_name(race)}\n{f1.format_winners(race, winners)}"
 
 
+async def title_outlook(text: str, races: list[dict]) -> str:
+    st = await f1.fetch_standings("driver")
+    if not st or not races:
+        return NO_DATA
+    nxt = next((r for r in races if int(r["round"]) > int(st["round"])), None)
+    if nxt and f1.race_start(nxt) + f1.RACE_LEN < datetime.now(timezone.utc):
+        return "积分榜尚未更新到最近一站，请稍后再试。"
+    return f1.format_title_outlook(st, races, f1.find_driver(text, st["DriverStandings"]))
+
+
 def session_end(race: dict, kind: str) -> datetime:
     field, length, _ = push.RESULT_KINDS[kind]
     return (f1.to_utc(**race[field]) if field else f1.race_start(race)) + length
@@ -130,6 +144,8 @@ async def answer_query(cmd: str, text: str = "") -> str:
     if cmd == "sprint_q":
         return "暂无冲刺排位赛的数据源，可查询冲刺赛、排位赛或正赛结果。"
     races = f1.load_races()
+    if cmd == "title":
+        return await title_outlook(text, races)
     race, kind = f1.find_race(text, races), SESSION_CMDS.get(cmd)
     if race and kind:
         return await race_result(race, kind)
