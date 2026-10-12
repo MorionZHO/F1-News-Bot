@@ -168,9 +168,9 @@ def format_weekend(race: dict, head: str = "") -> str:
     return "\n".join(lines + ["（均为北京时间）"])
 
 
-def format_calendar(races: list[dict]) -> str:
+def format_calendar(races: list[dict], title: str = "今年F1赛历") -> str:
     rows = [f"R{r['round']} {race_start(r).astimezone(BJT):%m-%d} {gp_name(r)}" for r in races]
-    return "\n".join(["今年F1赛历（正赛日期，北京时间）"] + rows)
+    return "\n".join([f"{title}（正赛日期，北京时间）"] + rows)
 
 
 def format_reminder(race: dict, name: str, start: datetime, minutes: int) -> str:

@@ -16,7 +16,7 @@ HELP = (  # 每行尽量不超过手机气泡一行宽（约 16 个汉字）
     "F1 赛事助手 · @我 + 关键词\n"
     "\n"
     "【赛程】\n"
-    "下一场　赛历\n"
+    "下一场　赛历　剩余赛程\n"
     "站名 → 该站时间表，例：巴库\n"
     "\n"
     "【成绩】\n"
@@ -39,6 +39,7 @@ COMMANDS = [  # 顺序即匹配优先级
     ("积分", "driver"), ("排名", "driver"), ("榜", "driver"),
     ("冲刺排位", "sprint_q"), ("冲刺", "sprint"), ("排位", "qualifying"),
     ("结果", "result"), ("上一场", "result"), ("上一站", "result"), ("成绩", "result"), ("正赛", "result"),
+    ("剩余", "remaining"), ("还剩", "remaining"), ("余下", "remaining"), ("接下来", "remaining"),
     ("赛历", "calendar"), ("全年", "calendar"), ("赛季", "calendar"),
     ("冠军", "winners"), ("历届", "winners"), ("往届", "winners"), ("赛道", "winners"),
     ("下一场", "next"), ("下一站", "next"), ("赛程", "next"), ("时间", "next"), ("日程", "next"),
@@ -165,7 +166,11 @@ async def answer_query(cmd: str, text: str = "") -> str:
         return NO_DATA
     if cmd == "calendar":
         return f1.format_calendar(races)
-    race = f1.next_race(races, datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    if cmd == "remaining":
+        left = [r for r in races if f1.race_start(r) + f1.RACE_LEN > now]
+        return f1.format_calendar(left, f"今年F1剩余{len(left)}站") if left else "本赛季已全部结束。"
+    race = f1.next_race(races, now)
     return f1.format_weekend(race, "最近比赛周：") if race else "本赛季已全部结束。"
 
 

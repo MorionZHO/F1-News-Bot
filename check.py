@@ -103,7 +103,9 @@ def check_parse():
              "冲刺排位": "sprint_q", "比利时正赛": "result", "斯帕冠军": "winners",
              "蒙扎历届冠军": "winners", "往届": "winners", "ANT夺冠条件": "title", "WDC": "title",
              "争冠形势": "title", "冠军条件": "title", "提前夺冠": "title", "锁定冠军条件": "title",
-             "WDC条件": "title", "拉塞尔夺冠条件": "title", "斯帕冠军": "winners", "积分": "driver"}
+             "WDC条件": "title", "拉塞尔夺冠条件": "title", "斯帕冠军": "winners",
+             "今年所有剩余比赛日期安排": "remaining", "剩余赛程": "remaining", "还剩几站": "remaining",
+             "接下来的比赛时间": "remaining", "积分": "driver"}
     for text, cmd in cases.items():
         assert main.parse(text) == cmd, (text, main.parse(text))
 
