@@ -2,3 +2,7 @@ appid = "你的AppID"
 secret = "你的AppSecret"
 # 每节开始前多少分钟提醒，可写多个，例如 [30, 10]
 remind_minutes = [30]
+# 健康告警发到哪个群（群 openid，可在日志 "at message from group ..." 里找到）；不填则只写日志
+alert_group = ""
+# 常用的 SSH 登录来源 IP，其他 IP 登录成功会告警
+ssh_trusted_ips = []

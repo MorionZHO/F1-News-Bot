@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import f1
+import health
 
 log = logging.getLogger("push")
 GRACE = timedelta(minutes=10)
@@ -169,10 +170,13 @@ async def push_all(state: State, key: str, text: str, send) -> None:
         try:
             await send(gid, text)
             state.sent.setdefault(key, []).append(gid)
+            health.send_done("推送")
         except Exception as e:
             log.error("push %s to %s failed: %s", key, gid, e)
-            if "40034105" in str(e):
+            if "40034105" in str(e):  # 群主关了主动消息，属于群设置，不算故障
                 state.groups[gid]["no_push"] = True
+            else:
+                health.send_done("推送", e)
         state.save()
         await asyncio.sleep(SEND_GAP_SECONDS)
 
@@ -232,6 +236,8 @@ async def run(cfg: dict, state: State, send) -> None:
                 for kind, key, n in due_attempts(race, now, state, tried):
                     tried.add((key, n))
                     await poll_result(race, kind, key, state, send)
-        except Exception:
+            health.ok("loop")
+        except Exception as e:
             log.exception("push loop error")
+            health.fail("loop", health.LIMITS["loop"], f"推送主循环出错：{type(e).__name__}，提醒和结果推送可能中断")
         await asyncio.sleep(TICK_SECONDS)

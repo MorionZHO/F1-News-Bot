@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import f1
+import health
 import main
 import push
 
@@ -81,8 +82,11 @@ def check_grid():
     with_grid = sorted(k for k, t in tasks.items() if t.grid)
     assert with_grid == ["2026-17-冲刺赛-30-20261010T0900", "2026-17-正赛 Race-30-20261011T1200"], with_grid
     assert tasks["2026-17-正赛 Race-30-20261011T1200"].grid.name == "grid-2026-17-race.json"
-    assert f1.format_grid(["维斯塔潘", "勒克莱尔", "汉密尔顿", "安东内利"]) == \
-        "发车顺序（维修区起步不单独标注）：\n1 维斯塔潘　2 勒克莱尔　3 汉密尔顿\n4 安东内利"
+    assert f1.format_grid(["维斯塔潘", "勒克莱尔", "劳森", "安东内利", "周冠宇"]) == \
+        "发车顺序（维修区起步不单独标注）：\n" \
+        "　１ 维斯塔潘　　２ 勒克莱尔\n" \
+        "　３ 劳森　　　　４ 安东内利\n" \
+        "　５ 周冠宇"
 
 
 def check_refresh_interval():
@@ -256,8 +260,79 @@ def check_winners():
     assert f1.format_winners(BAKU, []) == "本赛道此前未举办过F1大奖赛。"
 
 
+def check_session_results():
+    def res(pos, family, pts, status="Finished", laps="19"):
+        return {"position": pos, "positionText": pos, "points": str(pts), "status": status, "laps": laps,
+                "Driver": {"givenName": "", "familyName": family}, "Constructor": {"name": "Red Bull"}}
+    rows = [res(str(i), f"D{i}", p) for i, p in enumerate([8, 7, 6, 5, 4, 3, 2, 1, 0], 1)]
+    rows += [res("10", "Albon", 0, "Retired", "18"), res("R", "Stroll", 0, "Retired", "3"),
+             res("W", "Gasly", 0, "Did not start", "0"), res("D", "Ocon", 0, "Disqualified")]
+    lines = f1.format_session({"raceName": "Singapore Grand Prix", "Results": rows}, "sprint").split("\n")
+    assert lines[0] == "新加坡大奖赛 冲刺赛结果（前8）" and lines[8].startswith("8. ") and len(lines) == 12, lines
+    assert lines[9:] == ["退赛：阿尔本（完成18圈）、斯特罗尔（完成3圈）", "未起步：加斯利", "取消资格：奥康"], lines[9:]
+
+
+def check_health():
+    class HTTPError(Exception):
+        def __init__(self, status):
+            self.status = status
+    reset = lambda: [d.clear() for d in (health._fails, health._last, health._pending, health._msgs)]
+    reset()
+    for _ in range(4):
+        health.fetch_done("api.jolpi.ca", TimeoutError())
+    health.fetch_done("api.jolpi.ca", HTTPError(404))  # 查无结果不算故障，也不清零
+    assert not health._pending
+    health.fetch_done("api.jolpi.ca", TimeoutError())
+    assert health._pending == ["Jolpica 请求失败：TimeoutError（已连续失败 5 次）"], health._pending
+    health.fetch_done("api.jolpi.ca", TimeoutError())  # 6 小时冷却内不重复告警
+    health.fetch_done("api.jolpi.ca")
+    assert len(health._pending) == 1 and "fetch:api.jolpi.ca" not in health._fails
+    health.fetch_done("api.openf1.org", HTTPError(429))  # 限流立即告警
+    assert health._pending[-1].startswith("OpenF1 返回 429") and len(health._pending) == 2
+    reset()
+    for _ in range(3):
+        health.send_done("推送", Exception("code: 22009, err_code 40054010"))
+    assert health._pending == ["QQ 消息发送失败（推送）：40054010（已连续失败 3 次）"], health._pending
+
+    reset()
+    for i in range(21):
+        health.on_message("BF0169960B9D", now=i * 4.0)  # 80 秒 21 条，任一分钟都不超 20
+    assert not health._pending
+    for i in range(21):
+        health.on_message("BF0169960B9D", now=100 + i)
+    assert health._pending == ["群 BF0169… 1 分钟内 @ 超过 20 次，疑似刷屏"], health._pending
+
+    reset()
+    health._auth.update(ino=None, pos=0)
+    with tempfile.TemporaryDirectory() as d:
+        log = Path(d) / "auth.log"
+        log.write_text("old: Accepted password for root from 6.6.6.6 port 1 ssh2\n")
+        health.check_ssh({"1.1.1.1"}, log)  # 启动前的历史不告警
+        with log.open("a") as f:
+            f.write("Accepted publickey for ubuntu from 1.1.1.1 port 2 ssh2\nAccepted publickey for ubuntu from 2.2.2.2")
+        health.check_ssh({"1.1.1.1"}, log)
+        assert not health._pending  # 常用 IP 不告警，半行留到下次
+        with log.open("a") as f:
+            f.write(" port 3 ssh2\n")
+        health.check_ssh({"1.1.1.1"}, log)
+        assert len(health._pending) == 1 and "2·2·2·2 以 ubuntu 身份" in health._pending[0], health._pending
+        log.unlink()
+        log.write_text("Accepted password for root from 3.3.3.3 port 4 ssh2\n")  # 日志轮转后从头读
+        health.check_ssh({"1.1.1.1"}, log)
+        assert "3·3·3·3" in health._pending[-1], health._pending
+
+    reset()
+    health.check_disk(Path(__file__).parent)
+    assert not health._pending  # 本机磁盘空间充足
+    old, health.DISK_MIN_FREE = health.DISK_MIN_FREE, 1 << 60
+    health.check_disk(Path(__file__).parent)
+    health.DISK_MIN_FREE = old
+    assert health._pending[0].startswith("存储空间不足"), health._pending
+    reset()
+
+
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_title, check_title_bruteforce, check_clinch_preview):
+               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_session_results, check_title, check_title_bruteforce, check_clinch_preview, check_health):
         fn()
     print("OK")

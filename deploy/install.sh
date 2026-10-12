@@ -11,6 +11,11 @@ cd "$(dirname "$0")/.."
 ssh "$HOST" 'sudo bash -s' <<'EOF'
 set -e
 id f1bot >/dev/null 2>&1 || useradd -r -m -s /usr/sbin/nologin f1bot
+usermod -aG adm f1bot  # 读 /var/log/auth.log，做 SSH 登录告警
+# 只允许密钥登录、禁止 root 登录；00- 前缀让它排在 cloud-init 的 PasswordAuthentication yes 之前生效
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\n' \
+  > /etc/ssh/sshd_config.d/00-f1bot-harden.conf
+sshd -t && systemctl reload ssh
 mkdir -p /opt/f1bot && chown ubuntu:ubuntu /opt/f1bot 2>/dev/null || true
 dpkg -s python3-venv rsync >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq python3-venv rsync)
 EOF

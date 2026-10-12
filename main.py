@@ -9,6 +9,7 @@ from pathlib import Path
 import botpy
 
 import f1
+import health
 import push
 
 log = logging.getLogger("main")
@@ -61,6 +62,7 @@ class Bot(botpy.Client):
     async def on_ready(self):
         log.info("on_ready: %s", self.robot.name)
         asyncio.create_task(push.run(self.cfg, self.state, self.send_active))
+        asyncio.create_task(health.run(self.cfg, self.send_active))
 
     async def send_active(self, gid: str, text: str):
         await self.api.post_group_message(group_openid=gid, msg_type=0, content=text)
@@ -82,13 +84,19 @@ class Bot(botpy.Client):
     async def on_group_at_message_create(self, message):
         gid = message.group_openid
         log.info("at message from group %s: %r", gid, message.content)
+        health.on_message(gid)
         self.state.register(gid)
         try:
             reply = await self.answer(message.content, gid)
         except Exception:
             log.exception("command failed")
             reply = NO_DATA
-        await message.reply(msg_type=0, content=reply)
+        try:
+            await message.reply(msg_type=0, content=reply)
+            health.send_done("回复")
+        except Exception as e:
+            log.error("reply to %s failed: %s", gid, e)
+            health.send_done("回复", e)
 
     async def answer(self, text: str, gid: str) -> str:
         cmd = parse(text)

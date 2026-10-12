@@ -5,8 +5,11 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import aiohttp
+
+import health
 
 API = "https://api.jolpi.ca/ergast/f1"
 OPENF1 = "https://api.openf1.org/v1"
@@ -73,7 +76,7 @@ DRIVER_NAMES = {
     "Antonelli": "安东内利", "Russell": "拉塞尔", "Hamilton": "汉密尔顿", "Norris": "诺里斯",
     "Leclerc": "勒克莱尔", "Verstappen": "维斯塔潘", "Piastri": "皮亚斯特里", "Hadjar": "哈贾尔",
     "Lawson": "劳森", "Gasly": "加斯利", "Lindblad": "林德布拉德", "Colapinto": "科拉平托",
-    "Bearman": "贝尔曼", "Bortoleto": "博尔托莱托", "Hülkenberg": "霍肯伯格", "Ocon": "奥康",
+    "Bearman": "贝尔曼", "Bortoleto": "博托莱托", "Hülkenberg": "霍肯伯格", "Ocon": "奥康",
     "Sainz": "塞恩斯", "Albon": "阿尔本", "Alonso": "阿隆索", "Tsunoda": "角田裕毅",
     "Stroll": "斯特罗尔", "Bottas": "博塔斯", "Pérez": "佩雷兹",
     "Vettel": "维特尔", "Räikkönen": "莱科宁", "Ricciardo": "里卡多", "Rosberg": "罗斯伯格",
@@ -131,9 +134,11 @@ async def _fetch(url: str, cache: str):
                 r.raise_for_status()
                 data = await r.json()
         (DATA / cache).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        health.fetch_done(urlsplit(url).hostname)
         return data
     except Exception as e:
         log.warning("fetch %s failed: %s", url, e)
+        health.fetch_done(urlsplit(url).hostname, e)
         return _read(DATA / cache)
 
 
@@ -249,9 +254,20 @@ async def fetch_grid(race: dict, kind: str) -> list[str] | None:
     return out
 
 
+_FULLWIDTH = str.maketrans("0123456789 ", "０１２３４５６７８９　")
+
+
 def format_grid(names: list[str]) -> str:
-    items = [f"{i} {n}" for i, n in enumerate(names, 1)]
-    rows = ["　".join(items[i:i + 3]) for i in range(0, len(items), 3)]
+    """每行两人；QQ 是比例字体，序号和补位全用全角字符才能让右列序号对齐。
+    ponytail: 按中文名等宽补位，名字若退化成英文代码，右列会错位几个像素。"""
+    num = lambda i: f"{i:>2}".translate(_FULLWIDTH)
+    width = max(map(len, names[::2]))
+    rows = []
+    for i in range(0, len(names), 2):
+        row = f"{num(i + 1)} {names[i]}"
+        if i + 1 < len(names):
+            row += "　" * (width - len(names[i]) + 1) + f"{num(i + 2)} {names[i + 1]}"
+        rows.append(row)
     return "\n".join(["发车顺序（维修区起步不单独标注）："] + rows)
 
 
@@ -284,15 +300,39 @@ def team_name(c: dict) -> str:
     return TEAM_NAMES.get(c["name"], c["name"])
 
 
-def format_results(race: dict, top: int = 10, title: str = "正赛") -> str:
-    lines = [f"{gp_name(race)} {title}结果（前{top}）"]
-    for r in race["Results"][:top]:
+def format_results(race: dict, title: str = "正赛") -> str:
+    scorers = [r for r in race["Results"] if float(r["points"]) > 0]  # 按实际得分筛，积分规则变了也不用改
+    lines = [f"{gp_name(race)} {title}结果（前{len(scorers)}）"]
+    for r in scorers:
         lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）+{r['points']}分")
     fastest = next((r for r in race["Results"] if r.get("FastestLap", {}).get("rank") == "1"), None)
     if fastest:
         lines.append(f"最快圈速：{driver_name(fastest['Driver'])}（{team_name(fastest['Constructor'])}）"
                      f" {fastest['FastestLap']['Time']['time']}")
-    return "\n".join(lines)
+    return "\n".join(lines + _non_finishers(race["Results"]))
+
+
+def _non_finish_kind(r: dict) -> str | None:
+    """Jolpica 自 2024 年起不再给具体退赛原因，只剩 Retired / Did not start / Disqualified。
+    跑够 90% 距离的退赛车手仍有名次，状态同样是 Retired，也算退赛。"""
+    pos, status = r["positionText"], r["status"]
+    if pos in ("D", "E") or status == "Disqualified":
+        return "取消资格"
+    if pos in ("W", "F") or status in ("Did not start", "Withdrew"):
+        return "未起步"
+    if pos in ("R", "N") or status not in ("Finished", "Lapped") and not status.startswith("+"):
+        return "退赛"
+    return None
+
+
+def _non_finishers(results: list[dict]) -> list[str]:
+    groups = {"退赛": [], "未起步": [], "取消资格": []}
+    for r in results:
+        kind = _non_finish_kind(r)
+        if kind:
+            laps = f"（完成{r['laps']}圈）" if kind == "退赛" else ""
+            groups[kind].append(driver_name(r["Driver"]) + laps)
+    return [f"{kind}：{'、'.join(names)}" for kind, names in groups.items() if names]
 
 
 def format_qualifying(race: dict, top: int = 10) -> str:

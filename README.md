@@ -30,10 +30,12 @@ cp config.example.toml config.toml   # 填入 appid / secret
 ## 三、部署与运维
 
 ```bash
-deploy/install.sh root@服务器IP      # 首次部署与后续更新均用它
-ssh root@服务器IP systemctl status f1bot
-ssh root@服务器IP journalctl -u f1bot -f      # 看日志，应有 on_ready
+deploy/install.sh ubuntu@服务器IP      # 首次部署与后续更新均用它
+ssh ubuntu@服务器IP systemctl status f1bot
+ssh ubuntu@服务器IP journalctl -u f1bot -f      # 看日志，应有 on_ready
 ```
+
+部署脚本会把 SSH 改为仅密钥登录并禁止 root 登录，首次部署前先确认本机能用密钥登录 ubuntu 用户。
 
 部署成功后务必停掉本机运行的 `main.py`，同一机器人只能有一个实例。
 
@@ -46,4 +48,5 @@ ssh root@服务器IP journalctl -u f1bot -f      # 看日志，应有 on_ready
 - 赛历自动获取并缓存于 `data/schedule.json`（每 12 小时刷新，失败用缓存）。
 - 手动导入：把同格式 JSON 放到 `data/schedule.override.json`，优先使用。
 - `config.toml` 的 `remind_minutes = [30, 10]` 可设置多次提醒。
+- `alert_group` 填群 openid 后，数据源连续失败或限流、QQ 发送失败、刷屏、磁盘不足、陌生 IP 登录 SSH 时会往该群告警（见 `health.py`）；服务器宕机或断网时 bot 发不出告警，需另配云监控。
 - `data/groups.json` 为订阅群，`data/sent.json` 为已发送记录（防重复）。
