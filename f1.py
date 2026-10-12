@@ -305,11 +305,12 @@ def format_results(race: dict, title: str = "正赛") -> str:
     lines = [f"{gp_name(race)} {title}结果（前{len(scorers)}）"]
     for r in scorers:
         lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）+{r['points']}分")
+    blocks = ["\n".join(lines)]  # 各模块之间空一行
     fastest = next((r for r in race["Results"] if r.get("FastestLap", {}).get("rank") == "1"), None)
     if fastest:
-        lines.append(f"最快圈速：{driver_name(fastest['Driver'])}（{team_name(fastest['Constructor'])}）"
-                     f" {fastest['FastestLap']['Time']['time']}")
-    return "\n".join(lines + _non_finishers(race["Results"]))
+        blocks.append(f"【最快圈速】\n{driver_name(fastest['Driver'])}（{team_name(fastest['Constructor'])}）"
+                      f" {fastest['FastestLap']['Time']['time']}")
+    return "\n\n".join(blocks + _non_finishers(race["Results"]))
 
 
 def _non_finish_kind(r: dict) -> str | None:
@@ -332,7 +333,7 @@ def _non_finishers(results: list[dict]) -> list[str]:
         if kind:
             laps = f"（完成{r['laps']}圈）" if kind == "退赛" else ""
             groups[kind].append(driver_name(r["Driver"]) + laps)
-    return [f"{kind}：{'、'.join(names)}" for kind, names in groups.items() if names]
+    return [f"【{kind}】\n{'、'.join(names)}" for kind, names in groups.items() if names]
 
 
 def format_qualifying(race: dict, top: int = 10) -> str:

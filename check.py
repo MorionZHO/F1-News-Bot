@@ -268,8 +268,12 @@ def check_session_results():
     rows += [res("10", "Albon", 0, "Retired", "18"), res("R", "Stroll", 0, "Retired", "3"),
              res("W", "Gasly", 0, "Did not start", "0"), res("D", "Ocon", 0, "Disqualified")]
     lines = f1.format_session({"raceName": "Singapore Grand Prix", "Results": rows}, "sprint").split("\n")
-    assert lines[0] == "新加坡大奖赛 冲刺赛结果（前8）" and lines[8].startswith("8. ") and len(lines) == 12, lines
-    assert lines[9:] == ["退赛：阿尔本（完成18圈）、斯特罗尔（完成3圈）", "未起步：加斯利", "取消资格：奥康"], lines[9:]
+    assert lines[0] == "新加坡大奖赛 冲刺赛结果（前8）" and lines[8].startswith("8. "), lines
+    assert lines[9:] == ["", "【退赛】", "阿尔本（完成18圈）、斯特罗尔（完成3圈）",
+                         "", "【未起步】", "加斯利", "", "【取消资格】", "奥康"], lines[9:]
+    rows[0]["FastestLap"] = {"rank": "1", "Time": {"time": "1:35.202"}}
+    text = f1.format_session({"raceName": "Singapore Grand Prix", "Results": rows}, "race")
+    assert "\n\n【最快圈速】\n D1（红牛） 1:35.202\n\n【退赛】\n" in text, text
 
 
 def check_health():
