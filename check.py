@@ -65,6 +65,26 @@ def check_dedupe_and_catchup():
         assert not st.targets("any-key")
 
 
+def check_grid():
+    start = f1.race_start(SINGAPORE)
+    at = lambda m: start - timedelta(minutes=m)
+    assert push.grid_phase(start, at(61), False, None, False) is None  # 太早
+    assert push.grid_phase(start, at(60), False, None, False) == "first"
+    assert push.grid_phase(start, at(57), False, at(60), False) is None  # 失败后不到 5 分钟
+    assert push.grid_phase(start, at(55), False, at(60), False) == "first"  # 满 5 分钟重试
+    assert push.grid_phase(start, at(50), True, at(60), False) is None  # 已有缓存不再取
+    assert push.grid_phase(start, at(35), True, at(60), False) == "final"  # 35 分钟必取最新版
+    assert push.grid_phase(start, at(33), True, at(35), True) is None  # 最新版只取一次
+    assert push.grid_phase(start, at(30), False, None, False) is None  # 30 分钟起 OpenF1 关闭
+    # 只有正赛/冲刺赛、且开赛前 35 分钟内的提醒附发车格
+    tasks = {t.key: t for t in push.build_tasks(SINGAPORE, [60, 30])}
+    with_grid = sorted(k for k, t in tasks.items() if t.grid)
+    assert with_grid == ["2026-17-冲刺赛-30-20261010T0900", "2026-17-正赛 Race-30-20261011T1200"], with_grid
+    assert tasks["2026-17-正赛 Race-30-20261011T1200"].grid.name == "grid-2026-17-race.json"
+    assert f1.format_grid(["维斯塔潘", "勒克莱尔", "汉密尔顿", "安东内利"]) == \
+        "发车顺序（维修区起步不单独标注）：\n1 维斯塔潘　2 勒克莱尔　3 汉密尔顿\n4 安东内利"
+
+
 def check_refresh_interval():
     races = [SINGAPORE, AUSTIN]  # 新加坡正赛 10-11 12:00 UTC
     assert push.refresh_interval(races, utc("2026-10-07T12:00:00")) == timedelta(hours=3)  # 正赛前 4 天
@@ -238,6 +258,6 @@ def check_winners():
 
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_title, check_title_bruteforce, check_clinch_preview):
+               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_title, check_title_bruteforce, check_clinch_preview):
         fn()
     print("OK")

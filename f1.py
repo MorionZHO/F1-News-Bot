@@ -9,6 +9,7 @@ from pathlib import Path
 import aiohttp
 
 API = "https://api.jolpi.ca/ergast/f1"
+OPENF1 = "https://api.openf1.org/v1"
 DATA = Path(__file__).parent / "data"
 BJT = timezone(timedelta(hours=8))
 RACE_LEN = timedelta(hours=3)
@@ -209,6 +210,49 @@ async def _latest_teams(round_: str) -> dict:
     """driverId -> 最近一站实际代表的车队。积分榜里 Constructors 的顺序不可靠，不能直接取最后一个。"""
     race = await fetch_session(round_, "race")
     return {r["Driver"]["driverId"]: r["Constructor"] for r in race["Results"]} if race else {}
+
+
+GRID_SOURCES = {  # 发车格挂在排位那一节下：kind -> (Jolpica 节次字段, OpenF1 session_name)
+    "race": ("Qualifying", "Qualifying"),
+    "sprint": ("SprintQualifying", "Sprint Qualifying"),
+}
+
+
+def _code_names() -> dict:
+    """三字代码 -> 中文名，取自已缓存的车手积分榜（OpenF1 的姓不带重音，不能直接查 DRIVER_NAMES）。"""
+    data = _read(DATA / "standings-driver.json")
+    lists = data["MRData"]["StandingsTable"]["StandingsLists"] if data else []
+    return {r["Driver"]["code"]: driver_name(r["Driver"]) for r in (lists[0]["DriverStandings"] if lists else [])}
+
+
+async def fetch_grid(race: dict, kind: str) -> list[str] | None:
+    """OpenF1 发车顺序（中文名列表）；取不到返回 None。比赛开始前后 30 分钟内免费账号访问不了 OpenF1。"""
+    field, session_name = GRID_SOURCES[kind]
+    if field not in race:
+        return None
+    when = to_utc(**race[field])
+    sessions = await _fetch(f"{OPENF1}/sessions?year={race['season']}", "openf1-sessions.json")
+    key = next((s["session_key"] for s in (sessions if isinstance(sessions, list) else [])
+                if s["session_name"] == session_name
+                and abs(datetime.fromisoformat(s["date_start"]) - when) < timedelta(hours=3)), None)
+    if key is None:
+        return None
+    grid = await _fetch(f"{OPENF1}/starting_grid?session_key={key}", f"openf1-grid-{key}.json")
+    drivers = await _fetch(f"{OPENF1}/drivers?session_key={key}", f"openf1-drivers-{key}.json")
+    if not isinstance(grid, list) or not grid or not isinstance(drivers, list):
+        return None
+    by_number, cn = {d["driver_number"]: d for d in drivers}, _code_names()
+    out = []
+    for g in sorted(grid, key=lambda g: g.get("position") or 99):
+        d = by_number.get(g["driver_number"], {})
+        out.append(cn.get(d.get("name_acronym"), d.get("last_name") or str(g["driver_number"])))
+    return out
+
+
+def format_grid(names: list[str]) -> str:
+    items = [f"{i} {n}" for i, n in enumerate(names, 1)]
+    rows = ["　".join(items[i:i + 3]) for i in range(0, len(items), 3)]
+    return "\n".join(["发车顺序（维修区起步不单独标注）："] + rows)
 
 
 async def fetch_winners(circuit_id: str) -> list[dict] | None:

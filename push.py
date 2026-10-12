@@ -5,6 +5,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import f1
 
@@ -22,6 +23,9 @@ TICK_SECONDS = 30
 _EXTRAS: dict[str, str] = {}  # 预告 key -> 附加内容后的完整文本
 RACE_WEEK = (timedelta(days=4), timedelta(days=1))  # 正赛前 4 天到正赛后 1 天算比赛周（覆盖周四预告到周一）
 SEND_GAP_SECONDS = 2
+# 发车格：开赛前 60 分钟起取，失败每 5 分钟重试；开赛前 35 分钟再取一次最新版（OpenF1 在开赛前 30 分钟起对免费账号关闭）
+GRID_FIRST, GRID_LAST, GRID_RETRY = timedelta(minutes=60), timedelta(minutes=35), timedelta(minutes=5)
+GRID_SESSIONS = {"正赛 Race": "race", "冲刺赛": "sprint"}  # 节次名 -> f1.GRID_SOURCES 的 kind
 
 
 @dataclass
@@ -31,6 +35,7 @@ class Task:
     until: datetime
     text: str
     race: dict | None = None  # 仅比赛周预告：发送时附上该赛道历届冠军和争冠形势
+    grid: Path | None = None  # 仅正赛/冲刺赛开赛前 35 分钟内的提醒：发送时附上已缓存的发车格
 
 
 class State:
@@ -82,9 +87,52 @@ def build_tasks(race: dict, remind_minutes: list[int]) -> list[Task]:
     for name, start in sess:
         for m in remind_minutes:
             text = f1.format_reminder(race, name, start, m)
+            grid = grid_file(race, GRID_SESSIONS[name]) if name in GRID_SESSIONS and \
+                timedelta(minutes=m) <= GRID_LAST else None
             tasks.append(Task(f"{rid}-{name}-{m}-{start:%Y%m%dT%H%M}", start - timedelta(minutes=m),
-                              start - timedelta(minutes=m) + GRACE, text))
+                              start - timedelta(minutes=m) + GRACE, text, grid=grid))
     return tasks
+
+
+def grid_file(race: dict, kind: str) -> Path:
+    return f1.DATA / f"grid-{race['season']}-{race['round']}-{kind}.json"
+
+
+def grid_phase(start: datetime, now: datetime, cached: bool, last_try: datetime | None,
+               final_done: bool) -> str | None:
+    """该不该现在取发车格："first"=开赛前 60~35 分钟还没缓存、距上次尝试满 5 分钟；
+    "final"=开赛前 35~30 分钟取一次最新版；其余 None。"""
+    if start - GRID_FIRST <= now < start - GRID_LAST:
+        return "first" if not cached and (last_try is None or now - last_try >= GRID_RETRY) else None
+    if start - GRID_LAST <= now < start - timedelta(minutes=30):
+        return None if final_done else "final"
+    return None
+
+
+def grid_jobs(races: list[dict], now: datetime) -> list[tuple[dict, str, datetime]]:
+    """开赛前 60 分钟内的正赛/冲刺赛：(race, kind, 开始时间)。"""
+    return [(r, GRID_SESSIONS[name], start) for r in races for name, start in f1.sessions(r)
+            if name in GRID_SESSIONS and start - GRID_FIRST <= now < start]
+
+
+async def update_grids(races: list[dict], now: datetime, tries: dict, final: set) -> None:
+    """取到且与缓存不同才覆盖；取不到就保留之前的缓存。"""
+    for race, kind, start in grid_jobs(races, now):
+        path = grid_file(race, kind)
+        phase = grid_phase(start, now, path.exists(), tries.get(path), path in final)
+        if not phase:
+            continue
+        tries[path] = now
+        if phase == "final":
+            final.add(path)
+        try:
+            names = await f1.fetch_grid(race, kind)
+        except Exception:  # 接口格式异常不能拖累同一轮的提醒推送
+            log.exception("grid %s failed", path.name)
+            names = None
+        log.info("grid %s %s: %s", path.name, phase, "ok" if names else "unavailable")
+        if names and names != f1._read(path):
+            path.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
 
 
 def due_tasks(races: list[dict], now: datetime, remind_minutes: list[int], state: State) -> list[Task]:
@@ -130,7 +178,10 @@ async def push_all(state: State, key: str, text: str, send) -> None:
 
 
 async def with_extras(t: Task, races: list[dict]) -> str:
-    """比赛周预告依次附赛道历届冠军、争冠形势；取不到数据就略过该部分，不影响预告本身。"""
+    """比赛周预告依次附赛道历届冠军、争冠形势；正赛/冲刺赛提醒附发车格。取不到数据就略过该部分。"""
+    if t.grid:
+        names = f1._read(t.grid)
+        return f"{t.text}\n\n{f1.format_grid(names)}" if names else t.text
     if not t.race:
         return t.text
     if t.key in _EXTRAS:  # 有群发送失败时每轮都会重试，避免每 30 秒重复请求接口
@@ -166,7 +217,7 @@ def refresh_interval(races: list[dict], now: datetime) -> timedelta:
 
 async def run(cfg: dict, state: State, send) -> None:
     """主循环：每 30 秒检查一次到期任务；赛历缓存比赛周超过 3 小时、平时超过 12 小时则刷新。"""
-    tried, last_refresh = set(), None
+    tried, last_refresh, grid_tries, grid_final = set(), None, {}, set()
     while True:
         now = datetime.now(timezone.utc)
         try:
@@ -174,6 +225,7 @@ async def run(cfg: dict, state: State, send) -> None:
                 await f1.refresh_schedule()
                 last_refresh = now
             races = f1.load_races()
+            await update_grids(races, now, grid_tries, grid_final)
             for t in due_tasks(races, now, cfg["remind_minutes"], state):
                 await push_all(state, t.key, await with_extras(t, races), send)
             for race in races:
