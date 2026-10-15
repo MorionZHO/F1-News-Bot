@@ -9,6 +9,7 @@ from pathlib import Path
 
 import f1
 import health
+import news
 
 log = logging.getLogger("push")
 GRACE = timedelta(minutes=10)
@@ -164,9 +165,11 @@ def due_attempts(race: dict, now: datetime, state: State, tried: set) -> list[tu
             if when <= now <= when + ATTEMPT_GRACE and (key, n) not in tried and state.targets(key)]
 
 
-async def push_all(state: State, key: str, text: str, send) -> None:
-    """逐群发送；失败的群不记入 sent，下一轮重试（仍受到期窗口限制）。"""
+async def push_all(state: State, key: str, text: str, send, only: list[str] | None = None) -> None:
+    """逐群发送（only 限定群范围）；失败的群不记入 sent，下一轮重试（仍受到期窗口限制）。"""
     for gid in state.targets(key):
+        if only is not None and gid not in only:
+            continue
         try:
             await send(gid, text)
             state.sent.setdefault(key, []).append(gid)
@@ -213,6 +216,16 @@ async def poll_result(race: dict, kind: str, key: str, state: State, send) -> No
     await push_all(state, key, text, send)
 
 
+async def poll_news(cfg: dict, state: State, send) -> None:
+    """news_groups 为群 openid 列表或 "all"（全部订阅群）；不填则不推新闻。按新闻 id 去重。"""
+    groups = cfg.get("news_groups")
+    if not groups:
+        return
+    data = await f1._fetch(news.URL, "news.json")
+    for it in news.valid_items(data, datetime.now(timezone.utc)):
+        await push_all(state, f"news-{it['id']}", news.format_news(it), send, None if groups == "all" else groups)
+
+
 def refresh_interval(races: list[dict], now: datetime) -> timedelta:
     before, after = RACE_WEEK
     in_week = any(f1.race_start(r) - before <= now <= f1.race_start(r) + after for r in races)
@@ -221,7 +234,7 @@ def refresh_interval(races: list[dict], now: datetime) -> timedelta:
 
 async def run(cfg: dict, state: State, send) -> None:
     """主循环：每 30 秒检查一次到期任务；赛历缓存比赛周超过 3 小时、平时超过 12 小时则刷新。"""
-    tried, last_refresh, grid_tries, grid_final = set(), None, {}, set()
+    tried, last_refresh, last_news, grid_tries, grid_final = set(), None, None, {}, set()
     while True:
         now = datetime.now(timezone.utc)
         try:
@@ -236,6 +249,9 @@ async def run(cfg: dict, state: State, send) -> None:
                 for kind, key, n in due_attempts(race, now, state, tried):
                     tried.add((key, n))
                     await poll_result(race, kind, key, state, send)
+            if last_news is None or now - last_news >= news.INTERVAL:
+                last_news = now
+                await poll_news(cfg, state, send)
             health.ok("loop")
         except Exception as e:
             log.exception("push loop error")

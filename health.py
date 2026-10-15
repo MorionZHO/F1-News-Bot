@@ -18,7 +18,7 @@ DISK_MIN_FREE, DISK_MIN_RATIO = 1 << 30, 0.10
 CHECK_SECONDS = 60
 AUTH_LOG = Path("/var/log/auth.log")  # f1bot 需在 adm 组才能读，见 deploy/install.sh
 ACCEPTED = re.compile(r"Accepted (\S+) for (\S+) from (\S+)")
-SOURCES = {"api.jolpi.ca": "Jolpica", "api.openf1.org": "OpenF1"}  # 告警里不能出现网址，QQ 会拒发
+SOURCES = {"api.jolpi.ca": "Jolpica", "api.openf1.org": "OpenF1", "raw.githubusercontent.com": "GitHub 新闻"}  # 告警里不能出现网址，QQ 会拒发
 
 _fails: dict[str, int] = {}
 _last: dict[str, float] = {}

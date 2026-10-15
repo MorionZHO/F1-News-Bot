@@ -1,5 +1,6 @@
 """自检：python check.py，全部 assert 通过即输出 OK。"""
 
+import asyncio
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import f1
 import health
 import main
+import news
 import push
 
 
@@ -335,8 +337,43 @@ def check_health():
     reset()
 
 
+def check_news():
+    now = utc("2026-10-15T03:30:00")
+    good = {"id": "a" * 40, "title_zh": "F1与卢旺达签约十年", "summary_zh": "最早于2030年首办。",
+            "source": "Autosport", "published": "2026-10-13T09:20:07Z"}
+    bad = [good | {"summary_zh": "详见 www.example.com"}, good | {"source": "autosport.com"},
+           good | {"id": "123"}, good | {"published": "2026-10-13T09:20:07"}, {"title_zh": "缺字段"}, "x"]
+    health._pending.clear(), health._last.clear()
+    items = news.valid_items({"items": [good] + bad[:4]}, now)
+    assert [i["id"] for i in items] == ["a" * 40] and health._pending, (items, health._pending)
+    assert news.valid_items({"items": [good]}, utc("2026-10-17T03:30:00")) == []  # 超过 3 天不推
+    assert news.format_news(items[0]) == "【F1 突发】F1与卢旺达签约十年\n最早于2030年首办。\n（Autosport · 周二 10-13 17:20）"
+    assert news.valid_items({"items": bad[4:]}, now) == [] and news.valid_items(None, now) == []
+
+    async def fake_fetch(url, cache):
+        return {"items": [good]}
+    sent = []
+    async def send(gid, text):
+        sent.append(gid)
+    old_fetch, old_gap, f1._fetch, push.SEND_GAP_SECONDS = f1._fetch, push.SEND_GAP_SECONDS, fake_fetch, 0
+    old_age, news.MAX_AGE = news.MAX_AGE, timedelta(days=3650)  # poll_news 用真实当前时间
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            st = push.State(Path(d))
+            st.register("test"), st.register("other")
+            for _ in range(2):  # 第二轮按 id 去重，不重复推
+                asyncio.run(push.poll_news({"news_groups": ["test"]}, st, send))
+            assert sent == ["test"], sent
+            asyncio.run(push.poll_news({}, st, send))  # 不配置则不推
+            asyncio.run(push.poll_news({"news_groups": "all"}, st, send))
+            assert sent == ["test", "other"], sent
+    finally:
+        f1._fetch, push.SEND_GAP_SECONDS, news.MAX_AGE = old_fetch, old_gap, old_age
+    health._pending.clear(), health._last.clear()
+
+
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_session_results, check_title, check_title_bruteforce, check_clinch_preview, check_health):
+               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_session_results, check_title, check_title_bruteforce, check_clinch_preview, check_health, check_news):
         fn()
     print("OK")

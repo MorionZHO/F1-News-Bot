@@ -132,7 +132,7 @@ async def _fetch(url: str, cache: str):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
             async with s.get(url) as r:
                 r.raise_for_status()
-                data = await r.json()
+                data = await r.json(content_type=None)  # GitHub raw 文件是 text/plain
         (DATA / cache).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         health.fetch_done(urlsplit(url).hostname)
         return data

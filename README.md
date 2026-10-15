@@ -48,5 +48,6 @@ ssh ubuntu@服务器IP journalctl -u f1bot -f      # 看日志，应有 on_ready
 - 赛历自动获取并缓存于 `data/schedule.json`（每 12 小时刷新，失败用缓存）。
 - 手动导入：把同格式 JSON 放到 `data/schedule.override.json`，优先使用。
 - `config.toml` 的 `remind_minutes = [30, 10]` 可设置多次提醒。
+- 突发新闻：Cursor 云端定时任务每 3 小时把 `news.json` 写到 `news-feed` 分支，bot 每 5 分钟读取、校验并按 id 去重后推送到 `news_groups`（群 openid 列表或 `"all"`），见 `news.py`。
 - `alert_group` 填群 openid 后，数据源连续失败或限流、QQ 发送失败、刷屏、磁盘不足、陌生 IP 登录 SSH 时会往该群告警（见 `health.py`）；服务器宕机或断网时 bot 发不出告警，需另配云监控。
 - `data/groups.json` 为订阅群，`data/sent.json` 为已发送记录（防重复）。
