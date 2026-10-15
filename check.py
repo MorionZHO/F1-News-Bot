@@ -347,7 +347,8 @@ def check_news():
     items = news.valid_items({"items": [good] + bad[:4]}, now)
     assert [i["id"] for i in items] == ["a" * 40] and health._pending, (items, health._pending)
     assert news.valid_items({"items": [good]}, utc("2026-10-17T03:30:00")) == []  # 超过 3 天不推
-    assert news.format_news(items[0]) == "【F1 突发】F1与卢旺达签约十年\n最早于2030年首办。\n（Autosport · 周二 10-13 17:20）"
+    assert news.format_news(items[0]) == ("【F1 News】\n「F1与卢旺达签约十年」\n\n最早于2030年首办。\n\n"
+                                          "（Autosport · 周二 10-13 17:20｜程序自动抓取，内容可能有误）")
     assert news.valid_items({"items": bad[4:]}, now) == [] and news.valid_items(None, now) == []
 
     async def fake_fetch(url, cache):

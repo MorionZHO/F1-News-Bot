@@ -42,4 +42,5 @@ def valid_items(data, now: datetime) -> list[dict]:
 
 
 def format_news(it: dict) -> str:
-    return f"【F1 突发】{it['title_zh']}\n{it['summary_zh']}\n（{it['source']} · {f1.fmt_time(it['published'])}）"
+    return (f"【F1 News】\n「{it['title_zh']}」\n\n{it['summary_zh']}\n\n"
+            f"（{it['source']} · {f1.fmt_time(it['published'])}｜程序自动抓取，内容可能有误）")
