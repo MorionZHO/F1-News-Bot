@@ -81,11 +81,28 @@ def preview_time(race: dict) -> datetime:
     return min(thursday, first - timedelta(hours=12))
 
 
+def welcome_time(race: dict) -> datetime:
+    """比赛周周一 12:00（北京时间）；比赛周按首节次所在的北京时间自然周算。"""
+    first = f1.sessions(race)[0][1].astimezone(f1.BJT)
+    return (first - timedelta(days=first.weekday())).replace(hour=12, minute=0, second=0, microsecond=0)
+
+
+def preview_head(race: dict) -> str:
+    """周四预告开头：按推送日到一练当天的北京时间日历天数，写成“明日（周五）进入本周赛程：”。"""
+    first = f1.sessions(race)[0][1].astimezone(f1.BJT)
+    days = (first.date() - preview_time(race).astimezone(f1.BJT).date()).days
+    when = {0: "今日", 1: "明日", 2: "后天"}.get(days)  # 隔 3 天及以上（赛程异常）不写具体日子
+    return f"{when}（周{f1.WEEKDAYS[first.weekday()]}）进入本周赛程：\n" if when else "本周赛程：\n"
+
+
 def build_tasks(race: dict, remind_minutes: list[int]) -> list[Task]:
     # 记录 key 带上节次开始时间：赛程调整后视为新任务，按新时间重新提醒
     rid, sess = f"{race['season']}-{race['round']}", f1.sessions(race)
     tasks = [Task(f"{rid}-preview-{sess[0][1]:%Y%m%dT%H%M}", preview_time(race), sess[0][1],
-                  f1.format_weekend(race, "本周比赛周："), race)]
+                  f1.format_weekend(race, preview_head(race)), race)]
+    if welcome_time(race) < preview_time(race):  # 周一欢迎预告；赛程极端紧凑时两条会撞，只留周四那条
+        tasks.append(Task(f"{rid}-welcome-{sess[0][1]:%Y%m%dT%H%M}", welcome_time(race), sess[0][1],
+                          f1.format_weekend(race, "欢迎来到比赛周！\n"), race))
     for name, start in sess:
         for m in remind_minutes:
             text = f1.format_reminder(race, name, start, m)

@@ -38,6 +38,15 @@ def check_preview_time():
     assert push.preview_time(BAKU) == utc("2026-09-23T20:30:00")
     # 新加坡一练在周五，预告为周四 20:00 北京时间 = 12:00 UTC
     assert push.preview_time(SINGAPORE) == utc("2026-10-08T12:00:00")
+    # 周一 12:00 北京时间 = 04:00 UTC；美国站一练在北京时间周六凌晨，仍属同一个自然周
+    assert push.welcome_time(SINGAPORE) == utc("2026-10-05T04:00:00")
+    assert push.welcome_time(AUSTIN) == utc("2026-10-19T04:00:00")
+    # 周四预告开头：新加坡一练周五 → 明日；美国站一练北京时间周六凌晨 → 后天；巴库预告在周四凌晨 04:30、一练当天 16:30 → 今日
+    assert push.preview_head(SINGAPORE) == "明日（周五）进入本周赛程：\n"
+    assert push.preview_head(AUSTIN) == "后天（周六）进入本周赛程：\n"
+    assert push.preview_head(BAKU) == "今日（周四）进入本周赛程：\n"
+    t = next(t for t in push.build_tasks(AUSTIN, [30]) if "welcome" in t.key)
+    assert t.text.startswith("欢迎来到比赛周！\n第18站") and t.race is AUSTIN and t.when < t.until, t.text
 
 
 def check_sprint_order():
