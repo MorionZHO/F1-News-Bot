@@ -346,6 +346,77 @@ def check_health():
     reset()
 
 
+def check_openf1_results():
+    flag = {"dnf": False, "dns": False, "dsq": False}
+    sess = [{"session_key": 7, "session_name": "Race", "date_start": "2026-10-25T20:00:00+00:00"},
+            {"session_key": 8, "session_name": "Qualifying", "date_start": "2026-10-24T21:00:00+00:00"}]
+    drivers = [{"driver_number": 1, "name_acronym": "VER", "first_name": "Max", "last_name": "Verstappen", "team_name": "Red Bull Racing"},
+               {"driver_number": 44, "name_acronym": "HAM", "first_name": "Lewis", "last_name": "Hamilton", "team_name": "Ferrari"},
+               {"driver_number": 16, "name_acronym": "LEC", "first_name": "Charles", "last_name": "Leclerc", "team_name": "Ferrari"}]
+    race_rows = [{"position": 1, "driver_number": 1, "points": 25.0, "number_of_laps": 56} | flag,
+                 {"position": 2, "driver_number": 44, "points": 18.0, "number_of_laps": 56} | flag,
+                 {"position": None, "driver_number": 16, "points": 0.0, "number_of_laps": 10} | flag | {"dnf": True}]
+    # 汉密尔顿第 7 圈 1:29.500 被赛会取消（赛道界限），最快圈应是他第 8 圈的 1:29.900
+    laps = [{"driver_number": 1, "lap_number": 5, "lap_duration": 90.0}, {"driver_number": 44, "lap_number": 7, "lap_duration": 89.5},
+            {"driver_number": 44, "lap_number": 8, "lap_duration": 89.9}]
+    control = [{"message": "CAR 44 (HAM) TIME 1:29.500 DELETED - TRACK LIMITS AT TURN 2 LAP 7 20:07:17"},
+               {"message": "CAR 1 (VER) LAP DELETED - TRACK LIMITS AT TURN 2 LAP 5 20:05:00 (PIT)"}]
+    qual_rows = [{"position": 1, "driver_number": 44, "duration": [95.0, 94.5, 94.035]},
+                 {"position": 2, "driver_number": 1, "duration": [96.0, 95.2, None]},
+                 {"position": 3, "driver_number": 16, "duration": [None, None, None]}]
+    feeds = {"/sessions?": sess, "session_result?session_key=7": race_rows, "drivers?session_key=7": drivers,
+             "laps?session_key=7": laps, "race_control?session_key=7": control,
+             "session_result?session_key=8": qual_rows, "drivers?session_key=8": drivers,
+             "current/18/results": {"MRData": {"RaceTable": {"Races": [{"round": "18", "Results": [{"marker": "jolpica"}]}]}}}}
+
+    def run(overrides=None):
+        async def fake(url, cache):
+            for part, data in (feeds | (overrides or {})).items():
+                if part in url:
+                    if isinstance(data, Exception):
+                        raise data
+                    return data
+        f1._fetch = fake
+        return lambda kind: asyncio.run(f1.fetch_session("18", kind))
+
+    saved = f1._fetch, f1.load_races, f1._code_drivers, f1.DATA
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            f1.DATA, f1.load_races, f1._code_drivers = Path(d), lambda: [AUSTIN], lambda: {}
+            got = run()("race")
+            assert f1.format_session(got, "race") == "\n".join([
+                f"{f1.gp_name(AUSTIN)} 正赛结果（前2）", "1. 维斯塔潘（红牛）+25分", "2. 汉密尔顿（法拉利）+18分", "",
+                "【最快圈速】", "汉密尔顿（法拉利） 1:29.900", "", "【退赛】", "勒克莱尔（完成10圈）"]), f1.format_session(got, "race")
+            assert f1.format_session(run()("qualifying"), "qualifying") == "\n".join([
+                f"{f1.gp_name(AUSTIN)} 排位赛结果（前10）", "1. 汉密尔顿（法拉利）1:34.035",
+                "2. 维斯塔潘（红牛）1:35.200", "3. 勒克莱尔（法拉利）无成绩"])
+            assert (Path(d) / "openf1-fastest-7.json").exists()  # 最快圈已缓存
+            (Path(d) / "openf1-fastest-7.json").unlink()
+            text = f1.format_session(run({"laps?session_key=7": None})("race"), "race")  # 圈速取不到：照出成绩，不显示最快圈
+            assert "1. 维斯塔潘" in text and "最快圈速" not in text, text
+            for name, over in {"连不上": {"/sessions?": ConnectionError()}, "成绩未公布": {"session_result?session_key=7": None},
+                               "只公布一部分": {"session_result?session_key=7": race_rows[:2]}}.items():
+                assert run(over)("race")["Results"] == [{"marker": "jolpica"}], name  # 回退 Jolpica
+    finally:
+        f1._fetch, f1.load_races, f1._code_drivers, f1.DATA = saved
+
+
+def check_early_polls():
+    with tempfile.TemporaryDirectory() as d:
+        st = push.State(Path(d))
+        st.register("g1")
+        key, tries = "2026-18-qualifying-result", {}
+        poll = lambda s: push.early_polls(AUSTIN, utc(s), st, tries)
+        assert poll("2026-10-24T22:34:00") == []  # 排位预计 22:00 结束，35 分钟后才取
+        assert poll("2026-10-24T22:35:00") == [("qualifying", key)]
+        tries[key] = utc("2026-10-24T22:35:00")
+        assert poll("2026-10-24T22:44:00") == [] and poll("2026-10-24T22:45:00") == [("qualifying", key)]  # 每 10 分钟
+        assert poll("2026-10-25T01:00:00") == []  # 到 3 小时由慢速尝试接手
+        st.sent[key] = ["g1"]
+        assert poll("2026-10-24T22:45:00") == []  # 已推送成功就不再取
+        assert poll("2026-10-25T22:35:00") == [("race", "2026-18-race-result")]  # 正赛预计 22:00 结束
+
+
 def check_news():
     now = utc("2026-10-15T03:30:00")
     good = {"id": "a" * 40, "title_zh": "F1与卢旺达签约十年", "summary_zh": "最早于2030年首办。",
@@ -384,6 +455,6 @@ def check_news():
 
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_session_results, check_title, check_title_bruteforce, check_clinch_preview, check_health, check_news):
+               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_session_results, check_title, check_title_bruteforce, check_clinch_preview, check_health, check_openf1_results, check_early_polls, check_news):
         fn()
     print("OK")

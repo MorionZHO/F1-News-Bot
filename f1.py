@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -86,6 +87,7 @@ TEAM_NAMES = {
     "RB F1 Team": "小红牛", "Alpine F1 Team": "Alpine", "Haas F1 Team": "哈斯",
     "Audi": "奥迪", "Williams": "威廉姆斯", "Aston Martin": "阿斯顿马丁",
     "Cadillac F1 Team": "凯迪拉克",
+    "Red Bull Racing": "红牛", "Racing Bulls": "小红牛", "Cadillac": "凯迪拉克",  # OpenF1 的叫法
 }
 SESSIONS = [
     ("FirstPractice", "一练 FP1"),
@@ -191,7 +193,21 @@ SESSION_API = {  # kind -> (接口名, 结果列表字段)；Jolpica 没有练�
 
 
 async def fetch_session(round_: str, kind: str):
-    """round_ 可为轮次号或 'last'。结果尚未入库时返回 None；有结果时统一放在 race['Results']。"""
+    """OpenF1 为主（官方成绩公布后几分钟内可用），取不到或出错再回退 Jolpica（入库常晚几小时）。
+    结果尚未出来时返回 None；有结果时统一放在 race['Results']，字段同 Jolpica。"""
+    race = next((r for r in load_races() if r["round"] == round_), None)
+    if race:
+        try:
+            result = await _openf1_session(race, kind)
+        except Exception:  # 接口格式异常不能让查询和推送整个失败，回退备用源
+            log.exception("openf1 %s %s failed", round_, kind)
+            result = None
+        if result:
+            return result
+    return await _jolpica_session(round_, kind)
+
+
+async def _jolpica_session(round_: str, kind: str):
     endpoint, field = SESSION_API[kind]
     data = await _fetch(f"{API}/current/{round_}/{endpoint}.json", f"{kind}-{round_}.json")
     races = data["MRData"]["RaceTable"]["Races"] if data else []
@@ -213,7 +229,7 @@ async def fetch_standings(kind: str):
 
 async def _latest_teams(round_: str) -> dict:
     """driverId -> 最近一站实际代表的车队。积分榜里 Constructors 的顺序不可靠，不能直接取最后一个。"""
-    race = await fetch_session(round_, "race")
+    race = await _jolpica_session(round_, "race")  # 积分榜本身来自 Jolpica，车队也取同源，避免每次查积分都多请求 OpenF1
     return {r["Driver"]["driverId"]: r["Constructor"] for r in race["Results"]} if race else {}
 
 
@@ -223,11 +239,23 @@ GRID_SOURCES = {  # 发车格挂在排位那一节下：kind -> (Jolpica 节次�
 }
 
 
-def _code_names() -> dict:
-    """三字代码 -> 中文名，取自已缓存的车手积分榜（OpenF1 的姓不带重音，不能直接查 DRIVER_NAMES）。"""
+def _code_drivers() -> dict:
+    """三字代码 -> Jolpica 车手信息，取自已缓存的车手积分榜（OpenF1 的姓不带重音，不能直接查 DRIVER_NAMES）。"""
     data = _read(DATA / "standings-driver.json")
     lists = data["MRData"]["StandingsTable"]["StandingsLists"] if data else []
-    return {r["Driver"]["code"]: driver_name(r["Driver"]) for r in (lists[0]["DriverStandings"] if lists else [])}
+    return {r["Driver"]["code"]: r["Driver"] for r in (lists[0]["DriverStandings"] if lists else [])}
+
+
+def _code_names() -> dict:
+    return {code: driver_name(d) for code, d in _code_drivers().items()}
+
+
+async def _openf1_key(race: dict, when: datetime, session_name: str):
+    """开始时间与 Jolpica 相差 3 小时内、名称相同的 OpenF1 session_key；找不到返回 None。"""
+    sessions = await _fetch(f"{OPENF1}/sessions?year={race['season']}", "openf1-sessions.json")
+    return next((s["session_key"] for s in (sessions if isinstance(sessions, list) else [])
+                 if s["session_name"] == session_name
+                 and abs(datetime.fromisoformat(s["date_start"]) - when) < timedelta(hours=3)), None)
 
 
 async def fetch_grid(race: dict, kind: str) -> list[str] | None:
@@ -235,11 +263,7 @@ async def fetch_grid(race: dict, kind: str) -> list[str] | None:
     field, session_name = GRID_SOURCES[kind]
     if field not in race:
         return None
-    when = to_utc(**race[field])
-    sessions = await _fetch(f"{OPENF1}/sessions?year={race['season']}", "openf1-sessions.json")
-    key = next((s["session_key"] for s in (sessions if isinstance(sessions, list) else [])
-                if s["session_name"] == session_name
-                and abs(datetime.fromisoformat(s["date_start"]) - when) < timedelta(hours=3)), None)
+    key = await _openf1_key(race, to_utc(**race[field]), session_name)
     if key is None:
         return None
     grid = await _fetch(f"{OPENF1}/starting_grid?session_key={key}", f"openf1-grid-{key}.json")
@@ -252,6 +276,79 @@ async def fetch_grid(race: dict, kind: str) -> list[str] | None:
         d = by_number.get(g["driver_number"], {})
         out.append(cn.get(d.get("name_acronym"), d.get("last_name") or str(g["driver_number"])))
     return out
+
+
+RESULT_SOURCES = {  # kind -> (Jolpica 节次字段，None 表示正赛, OpenF1 session_name)
+    "race": (None, "Race"),
+    "sprint": ("Sprint", "Sprint"),
+    "qualifying": ("Qualifying", "Qualifying"),
+}
+# 被赛会取消成绩的圈：“CAR 12 (ANT) TIME 1:37.395 DELETED - … LAP 19”或“CAR 6 (HAD) LAP DELETED - … LAP 33”
+DELETED_LAP = re.compile(r"CAR (\d+) \(\w+\) (?:TIME \S+ )?(?:LAP )?DELETED\b.*?\bLAP (\d+)")
+
+
+def _lap_str(sec: float) -> str:
+    ms = round(sec * 1000)
+    return f"{ms // 60000}:{ms % 60000 / 1000:06.3f}"
+
+
+async def _fastest_lap(key: int) -> list | None:
+    """[车号, 圈速]。取消成绩的圈（赛道界限违规）仍在圈速数据里，必须按赛会消息排除，否则会算错；
+    任一数据取不到就返回 None（不显示最快圈速）。成绩固定后缓存，查询不用每次拉 600KB 圈速。"""
+    cache = DATA / f"openf1-fastest-{key}.json"
+    if hit := _read(cache):
+        return hit
+    laps = await _fetch(f"{OPENF1}/laps?session_key={key}", f"openf1-laps-{key}.json")
+    control = await _fetch(f"{OPENF1}/race_control?session_key={key}", f"openf1-control-{key}.json")
+    if not (isinstance(laps, list) and isinstance(control, list)):
+        return None
+    deleted = {(int(c), int(n)) for m in control for c, n in DELETED_LAP.findall(m.get("message") or "")}
+    timed = [x for x in laps if x.get("lap_duration") and (x["driver_number"], x.get("lap_number")) not in deleted]
+    if not timed:
+        return None
+    best = min(timed, key=lambda x: x["lap_duration"])
+    out = [best["driver_number"], _lap_str(best["lap_duration"])]
+    cache.write_text(json.dumps(out), encoding="utf-8")
+    return out
+
+
+def _result_row(r: dict, rank: int, d: dict, known: dict, kind: str, fastest: list | None) -> dict:
+    """OpenF1 的一行成绩 -> Jolpica 格式（format_results / format_qualifying 直接可用）。"""
+    code = d.get("name_acronym", "")
+    driver = known.get(code) or {"driverId": code.lower(), "code": code, "givenName": d.get("first_name", ""),
+                                 "familyName": d.get("last_name", "")}
+    row = {"position": str(r["position"] or rank), "Driver": driver, "Constructor": {"name": d.get("team_name", "")}}
+    if kind == "qualifying":
+        return row | {f"Q{i}": _lap_str(t) for i, t in enumerate(r.get("duration") or [], 1) if t}
+    pos = str(r["position"]) if r["position"] else None
+    text, status = (("D", "Disqualified") if r["dsq"] else ("W", "Did not start") if r["dns"]
+                    else (pos or "R", "Retired") if r["dnf"] or not pos else (pos, "Finished"))  # 没有名次也算未完赛
+    points = r.get("points") or 0
+    row |= {"positionText": text, "status": status, "laps": str(r.get("number_of_laps") or 0),
+            "points": str(int(points)) if points == int(points) else str(points)}
+    if fastest and fastest[0] == r["driver_number"]:
+        row["FastestLap"] = {"rank": "1", "Time": {"time": fastest[1]}}
+    return row
+
+
+async def _openf1_session(race: dict, kind: str):
+    """成绩未公布、或只公布了一部分车手时返回 None，由调用方回退 Jolpica。"""
+    field, name = RESULT_SOURCES[kind]
+    if field and field not in race:
+        return None
+    key = await _openf1_key(race, to_utc(**race[field]) if field else race_start(race), name)
+    if key is None:
+        return None
+    rows = await _fetch(f"{OPENF1}/session_result?session_key={key}", f"openf1-result-{key}.json")
+    drivers = await _fetch(f"{OPENF1}/drivers?session_key={key}", f"openf1-drivers-{key}.json")
+    if not (isinstance(rows, list) and isinstance(drivers, list)) or not rows or len(rows) < len(drivers):
+        return None
+    rows.sort(key=lambda r: (r["position"] is None, r["position"] or 0))
+    fastest = await _fastest_lap(key) if kind != "qualifying" else None
+    known, by_number = _code_drivers(), {d["driver_number"]: d for d in drivers}
+    out = [_result_row(r, i, by_number.get(r["driver_number"], {}), known, kind, fastest)
+           for i, r in enumerate(rows, 1)]
+    return race | {"Results": out}
 
 
 _FULLWIDTH = str.maketrans("0123456789 ", "０１２３４５６７８９　")

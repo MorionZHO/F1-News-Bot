@@ -21,6 +21,7 @@ RESULT_KINDS = {
     "qualifying": ("Qualifying", timedelta(hours=1), (3, 6, 12)),
     "race": (None, timedelta(hours=2), (6, 12, 24)),
 }
+EARLY_START, EARLY_RETRY = timedelta(minutes=35), timedelta(minutes=10)  # 见 early_polls
 TICK_SECONDS = 30
 _EXTRAS: dict[str, str] = {}  # 预告 key -> 附加内容后的完整文本
 RACE_WEEK = (timedelta(days=4), timedelta(days=1))  # 正赛前 4 天到正赛后 1 天算比赛周（覆盖周四预告到周一）
@@ -182,6 +183,20 @@ def due_attempts(race: dict, now: datetime, state: State, tried: set) -> list[tu
             if when <= now <= when + ATTEMPT_GRACE and (key, n) not in tried and state.targets(key)]
 
 
+def early_polls(race: dict, now: datetime, state: State, tries: dict) -> list[tuple[str, str]]:
+    """赛后提前取结果：预计结束 35 分钟后（OpenF1 免费账号 30 分钟后才能访问）起每 10 分钟取一次，
+    直到推送成功（没有待发的群）或轮到第一次慢速尝试。慢速尝试照旧保留，作为两个数据源都出问题时的兜底。"""
+    out = []
+    for kind, key, n, when in result_attempts(race):
+        if n:
+            continue
+        end = when - timedelta(hours=RESULT_KINDS[kind][2][0])
+        last = tries.get(key)
+        if end + EARLY_START <= now < when and state.targets(key) and (last is None or now - last >= EARLY_RETRY):
+            out.append((kind, key))
+    return out
+
+
 async def push_all(state: State, key: str, text: str, send, only: list[str] | None = None) -> None:
     """逐群发送（only 限定群范围）；失败的群不记入 sent，下一轮重试（仍受到期窗口限制）。"""
     for gid in state.targets(key):
@@ -228,7 +243,7 @@ async def poll_result(race: dict, kind: str, key: str, state: State, send) -> No
     text = f1.format_session(result, kind)
     if kind == "race":
         standings = await f1.fetch_standings("driver")
-        if standings:
+        if standings and standings["round"] == race["round"]:  # 成绩出得快，积分榜可能还停在上一站，不能当成本站的发
             text += "\n\n" + f1.format_standings(standings, "driver", top=5)
     await push_all(state, key, text, send)
 
@@ -252,6 +267,7 @@ def refresh_interval(races: list[dict], now: datetime) -> timedelta:
 async def run(cfg: dict, state: State, send) -> None:
     """主循环：每 30 秒检查一次到期任务；赛历缓存比赛周超过 3 小时、平时超过 12 小时则刷新。"""
     tried, last_refresh, last_news, grid_tries, grid_final = set(), None, None, {}, set()
+    early_tries: dict[str, datetime] = {}
     while True:
         now = datetime.now(timezone.utc)
         try:
@@ -263,6 +279,9 @@ async def run(cfg: dict, state: State, send) -> None:
             for t in due_tasks(races, now, cfg["remind_minutes"], state):
                 await push_all(state, t.key, await with_extras(t, races), send)
             for race in races:
+                for kind, key in early_polls(race, now, state, early_tries):
+                    early_tries[key] = now
+                    await poll_result(race, kind, key, state, send)
                 for kind, key, n in due_attempts(race, now, state, tried):
                     tried.add((key, n))
                     await poll_result(race, kind, key, state, send)
