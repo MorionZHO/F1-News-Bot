@@ -392,7 +392,10 @@ def check_openf1_results():
                 "【最快圈速】", "汉密尔顿（法拉利） 1:29.900", "", "【退赛】", "勒克莱尔（完成10圈）"]), f1.format_session(got, "race")
             assert f1.format_session(run()("qualifying"), "qualifying") == "\n".join([
                 f"{f1.gp_name(AUSTIN)} 排位赛结果（前10）", "1. 汉密尔顿（法拉利）1:34.035",
-                "2. 维斯塔潘（红牛）1:35.200", "3. 勒克莱尔（法拉利）无成绩"])
+                "2. 维斯塔潘（红牛）Q3无有效圈速", "3. 勒克莱尔（法拉利）无成绩"])  # 进了 Q3 没成绩，不拿 Q2 的顶上
+            q = lambda pos, **t: f1._quali_time({"position": str(pos)} | t, 16)
+            assert q(11, Q1="1:36.0", Q2="1:35.1") == "1:35.1" and q(16, Q1="1:36.2") == "Q2无有效圈速"
+            assert q(17, Q1="1:36.5") == "1:36.5" and q(10, Q1="1:36", Q2="1:35.058", Q3="") == "Q3无有效圈速"
             full = f1.format_session(run()("qualifying"), "qualifying", top=None)  # 主动查询：列全部，标题不带“前N”
             assert full.startswith(f"{f1.gp_name(AUSTIN)} 排位赛结果\n1.") and "3. 勒克莱尔" in full, full
             assert (Path(d) / "openf1-fastest-7.json").exists()  # 最快圈已缓存

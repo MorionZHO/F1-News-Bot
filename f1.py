@@ -550,11 +550,24 @@ def _non_finishers(results: list[dict]) -> list[str]:
 def format_qualifying(race: dict, top: int | None = 10) -> str:
     """top=None 列出全部车手（主动查询用）；自动推送只列前 10。"""
     lines = [f"{gp_name(race)} 排位赛结果" + (f"（前{top}）" if top else "")]
+    q2_cut = max((int(r["position"]) for r in race["Results"] if r.get("Q2")), default=0)
     for r in race["Results"][:top]:
-        best = next(r[q] for q in ("Q3", "Q2", "Q1") if r.get(q)) if any(
-            r.get(q) for q in ("Q1", "Q2", "Q3")) else "无成绩"
-        lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）{best}")
+        lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）{_quali_time(r, q2_cut)}")
     return "\n".join(lines)
+
+
+Q3_SIZE = 10  # 规则变更：进入 Q3 的人数
+
+
+def _quali_time(r: dict, q2_cut: int) -> str:
+    """显示车手所在那一节的圈速：前 10 名看 Q3，到最后一个有 Q2 成绩的名次看 Q2，其余看 Q1。
+    这一节没跑出有效圈速就写明，不能拿上一节的成绩顶上，否则会比前一名还快。
+    ponytail: Q2 范围按“最后一个有 Q2 成绩的名次”推断，Q2 末位恰好也没成绩时会被当成 Q1 淘汰显示 Q1 圈速。"""
+    pos = int(r["position"])
+    seg = "Q3" if pos <= Q3_SIZE else "Q2" if pos <= q2_cut else "Q1"
+    if r.get(seg):
+        return r[seg]
+    return f"{seg}无有效圈速" if any(r.get(q) for q in ("Q1", "Q2", "Q3")) else "无成绩"
 
 
 # ---- 争冠计算 ----
