@@ -509,11 +509,13 @@ def team_name(c: dict) -> str:
     return TEAM_NAMES.get(c["name"], c["name"])
 
 
-def format_results(race: dict, title: str = "正赛") -> str:
-    scorers = [r for r in race["Results"] if float(r["points"]) > 0]  # 按实际得分筛，积分规则变了也不用改
-    lines = [f"{gp_name(race)} {title}结果（前{len(scorers)}）"]
-    for r in scorers:
-        lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）+{r['points']}分")
+def format_results(race: dict, title: str = "正赛", everyone: bool = False) -> str:
+    """默认只列有积分的车手（积分规则变了也不用改）；everyone=True（主动查询正赛）列全部完赛车手，退赛者见下方【退赛】等模块。"""
+    rows = [r for r in race["Results"] if everyone and not _non_finish_kind(r) or float(r["points"]) > 0]
+    lines = [f"{gp_name(race)} {title}结果" + ("" if everyone else f"（前{len(rows)}）")]
+    for r in rows:
+        pts = f"+{r['points']}分" if float(r["points"]) > 0 else ""
+        lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）{pts}")
     blocks = ["\n".join(lines)]  # 各模块之间空一行
     fastest = next((r for r in race["Results"] if r.get("FastestLap", {}).get("rank") == "1"), None)
     if fastest:
@@ -545,8 +547,9 @@ def _non_finishers(results: list[dict]) -> list[str]:
     return [f"【{kind}】\n{'、'.join(names)}" for kind, names in groups.items() if names]
 
 
-def format_qualifying(race: dict, top: int = 10) -> str:
-    lines = [f"{gp_name(race)} 排位赛结果（前{top}）"]
+def format_qualifying(race: dict, top: int | None = 10) -> str:
+    """top=None 列出全部车手（主动查询用）；自动推送只列前 10。"""
+    lines = [f"{gp_name(race)} 排位赛结果" + (f"（前{top}）" if top else "")]
     for r in race["Results"][:top]:
         best = next(r[q] for q in ("Q3", "Q2", "Q1") if r.get(q)) if any(
             r.get(q) for q in ("Q1", "Q2", "Q3")) else "无成绩"
@@ -700,10 +703,10 @@ def format_clinch_preview(st: dict, races: list[dict], race: dict) -> str:
     return "\n".join(out)
 
 
-def format_session(result: dict, kind: str) -> str:
+def format_session(result: dict, kind: str, top: int | None = 10) -> str:
     if kind == "qualifying":
-        return format_qualifying(result)
-    return format_results(result, title=SESSION_LABELS[kind])
+        return format_qualifying(result, top)
+    return format_results(result, title=SESSION_LABELS[kind], everyone=top is None and kind == "race")
 
 
 # ---- 赛后改判 ----

@@ -393,6 +393,8 @@ def check_openf1_results():
             assert f1.format_session(run()("qualifying"), "qualifying") == "\n".join([
                 f"{f1.gp_name(AUSTIN)} 排位赛结果（前10）", "1. 汉密尔顿（法拉利）1:34.035",
                 "2. 维斯塔潘（红牛）1:35.200", "3. 勒克莱尔（法拉利）无成绩"])
+            full = f1.format_session(run()("qualifying"), "qualifying", top=None)  # 主动查询：列全部，标题不带“前N”
+            assert full.startswith(f"{f1.gp_name(AUSTIN)} 排位赛结果\n1.") and "3. 勒克莱尔" in full, full
             assert (Path(d) / "openf1-fastest-7.json").exists()  # 最快圈已缓存
             (Path(d) / "openf1-fastest-7.json").unlink()
             text = f1.format_session(run({"laps?session_key=7": None})("race"), "race")  # 圈速取不到：照出成绩，不显示最快圈
@@ -479,6 +481,12 @@ def check_correction():
                           _res("NOR", "McLaren", 4, 12), _res("HUL", "Audi", 5, 0, "R", "Retired")]}
     after = {"Results": [_res("VER", "Red Bull", 1, 25), _res("LEC", "Ferrari", 2, 18), _res("NOR", "McLaren", 3, 15),
                          _res("HUL", "Audi", 4, 0, "R", "Lapped"), _res("HAM", "Ferrari", 5, 0, "D", "Disqualified")]}
+    push_text, query_text = f1.format_session(before | race, "race"), f1.format_session(before | race, "race", top=None)
+    assert "（前4）" in push_text and "5. 霍肯伯格" not in push_text  # 推送只列有分的
+    assert "正赛结果\n" in query_text and "4. 诺里斯（迈凯轮）+12分" in query_text  # 查询列全部完赛者，无“前N”
+    assert "5. 霍肯伯格" not in query_text and "【退赛】\n霍肯伯格" in query_text  # 退赛者只在【退赛】里
+    unscored = before["Results"] + [_res("NEW", "Audi", 6, 0)]
+    assert "6.  NEW（奥迪）\n" in f1.format_session(race | {"Results": unscored}, "race", top=None) + "\n"  # 无分完赛者也列出，不带“+0分”
     old, new = f1.result_snapshot(before), f1.result_snapshot(after)
     assert old["HUL"] == new["HUL"] == [None, "0", "退赛"]  # 未完赛者名次不比，两源写法不同也不误报
     text = f1.format_correction(race, "race", old, new, after, "车手积分榜（略）")

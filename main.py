@@ -112,7 +112,7 @@ async def race_result(race: dict, kind: str) -> str:
         return f1.format_weekend(race, f"本站没有{SESSION_LABELS[kind]}，以下是时间安排：\n")
     res = await f1.fetch_session(race["round"], kind)
     if res:
-        return f1.format_session(res, kind)
+        return f1.format_session(res, kind, top=None)  # 主动查询排位赛列全部车手，自动推送只列前 10
     label = SESSION_LABELS[kind]
     note = (f"本站{label}还没进行（或尚未开始），以下是时间安排：" if session_end(race, kind) > datetime.now(timezone.utc)
             else f"本站{label}已结束，但结果暂未更新，请稍后再试。以下是时间安排：")
