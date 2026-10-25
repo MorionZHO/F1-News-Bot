@@ -1,6 +1,7 @@
 """自检：python check.py，全部 assert 通过即输出 OK。"""
 
 import asyncio
+import json
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -377,12 +378,14 @@ def check_openf1_results():
                         raise data
                     return data
         f1._fetch = fake
+        f1._RECENT.clear()
         return lambda kind: asyncio.run(f1.fetch_session("18", kind))
 
-    saved = f1._fetch, f1.load_races, f1._code_drivers, f1.DATA
+    saved = f1._fetch, f1.load_races, f1._code_drivers, f1.DATA, f1._openf1_live
     try:
         with tempfile.TemporaryDirectory() as d:
             f1.DATA, f1.load_races, f1._code_drivers = Path(d), lambda: [AUSTIN], lambda: {}
+            f1._openf1_live = lambda now: False  # 不受真实时钟影响（真实赛中时段会跳过 OpenF1）
             got = run()("race")
             assert f1.format_session(got, "race") == "\n".join([
                 f"{f1.gp_name(AUSTIN)} 正赛结果（前2）", "1. 维斯塔潘（红牛）+25分", "2. 汉密尔顿（法拉利）+18分", "",
@@ -395,10 +398,130 @@ def check_openf1_results():
             text = f1.format_session(run({"laps?session_key=7": None})("race"), "race")  # 圈速取不到：照出成绩，不显示最快圈
             assert "1. 维斯塔潘" in text and "最快圈速" not in text, text
             for name, over in {"连不上": {"/sessions?": ConnectionError()}, "成绩未公布": {"session_result?session_key=7": None},
-                               "只公布一部分": {"session_result?session_key=7": race_rows[:2]}}.items():
+                               "只公布一部分": {"session_result?session_key=7": race_rows[:2]},
+                               "积分没填": {"session_result?session_key=7": [r | {"points": None} for r in race_rows]}}.items():
                 assert run(over)("race")["Results"] == [{"marker": "jolpica"}], name  # 回退 Jolpica
+            assert run({"session_result?session_key=8": [r | {"duration": None} for r in qual_rows]})(
+                "qualifying") is None  # 圈速没填、Jolpica 也没有：不出成绩
+            f1._fetch = saved[0]
+            f1._openf1_live = lambda now: True  # 赛中：OpenF1 只读缓存，不发请求
+            (Path(d) / "openf1-x.json").write_text('["cached"]', encoding="utf-8")
+            assert asyncio.run(f1._fetch(f"{f1.OPENF1}/session_result?session_key=1", "openf1-x.json")) == ["cached"]
+            f1._openf1_live = saved[4]
+            assert f1._openf1_live(utc("2026-10-25T21:00:00")) and f1._openf1_live(utc("2026-10-25T19:30:00"))  # 正赛中、赛前 30 分钟
+            assert not f1._openf1_live(utc("2026-10-25T22:35:00"))  # 正赛预计 22:00 结束，30 分钟后放开
     finally:
-        f1._fetch, f1.load_races, f1._code_drivers, f1.DATA = saved
+        f1._fetch, f1.load_races, f1._code_drivers, f1.DATA, f1._openf1_live = saved
+        f1._RECENT.clear()
+
+
+FAMILY = {"VER": "Verstappen", "HAM": "Hamilton", "LEC": "Leclerc", "NOR": "Norris", "HUL": "Hülkenberg"}
+
+
+def _res(code, team, pos, pts, text=None, status="Finished"):
+    return {"position": str(pos), "positionText": text or str(pos), "points": str(pts), "status": status, "laps": "50",
+            "Driver": {"driverId": code.lower(), "code": code, "givenName": "", "familyName": FAMILY.get(code, code)},
+            "Constructor": {"name": team}}
+
+
+def check_standings_catch_up():
+    def drv(code, team, pts, wins, pos):
+        return {"position": str(pos), "points": str(pts), "wins": str(wins),
+                "Driver": {"driverId": code.lower(), "code": code, "givenName": "", "familyName": code},
+                "Constructors": [{"name": team}]}
+    base = {"round": "17", "DriverStandings": [drv("VER", "Red Bull", 100, 3, 1), drv("HAM", "Ferrari", 90, 2, 2),
+                                               drv("LEC", "Ferrari", 80, 0, 3)]}
+    race = {"season": "2026", "round": "18"}
+    result = {"Results": [_res("LEC", "Ferrari", 1, 25), _res("NEW", "Red Bull Racing", 2, 18), _res("VER", "Red Bull Racing", 3, 15)]}
+    sprint = {"Results": [_res("HAM", "Ferrari", 1, 8), _res("VER", "Red Bull Racing", 2, 7)]}
+    st = f1._add_round(base, "driver", race, result, sprint)
+    got = [(r["Driver"]["code"], r["position"], r["points"], r["wins"]) for r in st["DriverStandings"]]
+    # 冲刺赛冠军不计 wins；HAM 与 LEC 同 98 分但胜场不同；新车手补进来
+    assert got == [("VER", "1", "122", "3"), ("LEC", "2", "105", "1"), ("HAM", "3", "98", "2"), ("NEW", "4", "18", "0")], got
+    assert st["round"] == "18" and base["DriverStandings"][0]["points"] == "100"  # 不改动原榜
+    tie = f1._add_round({"DriverStandings": [drv("A", "X", 7, 0, 1), drv("B", "X", 5, 0, 2)]}, "driver", race,
+                        {"Results": [_res("B", "X", 9, 2)]}, None)
+    assert [r["position"] for r in tie["DriverStandings"]] == ["1", "1"]  # 同分同胜场并列，不硬排先后
+    cons = f1._add_round({"ConstructorStandings": [{"position": "1", "points": "50", "wins": "1", "Constructor": {"name": "Red Bull"}}]},
+                         "constructor", race, result, sprint)  # OpenF1 叫 Red Bull Racing，按中文名合并
+    assert [(f1.team_name(r["Constructor"]), r["points"]) for r in cons["ConstructorStandings"]] == [("红牛", "90"), ("法拉利", "33")]
+
+    official = f1._add_round(base, "driver", race, result, sprint)
+    saved = f1._jolpica_standings, f1._latest_result
+    try:
+        def fake(current):
+            async def standings(kind, round_="current"):
+                return current if round_ == "current" else base
+            async def latest():
+                return race, result, sprint
+            f1._jolpica_standings, f1._latest_result = standings, latest
+            return asyncio.run(f1.fetch_standings("driver"))
+        health._pending.clear(), health._last.clear()
+        st = fake(base)  # 官方榜还停在第 17 站
+        assert st["round"] == "18" and st["provisional"] == "官方积分榜尚未更新" and st["latest_team"]["lec"] == {"name": "Ferrari"}
+        assert f1.format_standings(st, "driver").endswith("（官方积分榜尚未更新，暂按最新赛果计算）")
+        assert fake(official) is official and "provisional" not in official  # 官方榜已更新且一致：用官方榜
+        off = json.loads(json.dumps(official))
+        off["DriverStandings"][3]["Driver"]["driverId"] = "new_driver"  # 新车手在 Jolpica 的 id 和 OpenF1 拼的不同
+        assert fake(off) is off
+        off = json.loads(json.dumps(official))
+        off["DriverStandings"][0]["points"] = "120"  # 比如被罚扣分
+        st = fake(off)
+        assert st["provisional"] == "与官方积分榜有出入" and "VER 官方 120 分、推算 122 分" in health._pending[0], health._pending
+        health._pending.clear(), health._last.clear()
+    finally:
+        f1._jolpica_standings, f1._latest_result = saved
+
+
+def check_correction():
+    race = {"season": "2026", "round": "18", "raceName": "United States Grand Prix"}
+    before = {"Results": [_res("VER", "Red Bull", 1, 25), _res("HAM", "Ferrari", 2, 18), _res("LEC", "Ferrari", 3, 15),
+                          _res("NOR", "McLaren", 4, 12), _res("HUL", "Audi", 5, 0, "R", "Retired")]}
+    after = {"Results": [_res("VER", "Red Bull", 1, 25), _res("LEC", "Ferrari", 2, 18), _res("NOR", "McLaren", 3, 15),
+                         _res("HUL", "Audi", 4, 0, "R", "Lapped"), _res("HAM", "Ferrari", 5, 0, "D", "Disqualified")]}
+    old, new = f1.result_snapshot(before), f1.result_snapshot(after)
+    assert old["HUL"] == new["HUL"] == [None, "0", "退赛"]  # 未完赛者名次不比，两源写法不同也不误报
+    text = f1.format_correction(race, "race", old, new, after, "车手积分榜（略）")
+    assert text == "\n".join([
+        "【F1 News】", "「美国大奖赛 正赛成绩更新」", "", "赛后成绩有变动：",
+        "勒克莱尔：第3名 15分 → 第2名 18分", "诺里斯：第4名 12分 → 第3名 15分", "汉密尔顿：第2名 18分 → 取消资格 0分",
+        "", "车手积分榜（略）", "", "（官方成绩更新｜程序自动比对，内容可能有误）"]), text
+
+    sent, results = [], {"now": after}
+    async def send(gid, msg):
+        if gid == "flaky" and len(sent) == 0:
+            raise RuntimeError("timeout")
+        sent.append((gid, msg))
+    async def fake_session(round_, kind):
+        return race | results["now"]
+    async def no_standings(kind):
+        return None
+    saved = f1.DATA, f1.openf1_result, f1.fetch_session, f1.fetch_standings, push.SEND_GAP_SECONDS
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            f1.DATA, f1.openf1_result, f1.fetch_session, f1.fetch_standings, push.SEND_GAP_SECONDS = (
+                Path(d), fake_session, fake_session, no_standings, 0)
+            st = push.State(Path(d))
+            st.register("flaky"), st.register("g2")
+            key = "2026-18-race-result"
+            recheck = lambda: asyncio.run(push.recheck_result(race, "race", key, st, send))
+            recheck()  # 上线前推过、没有快照：以当前为基准，不推
+            assert sent == [] and f1._read(Path(d) / f"snapshot-{key}.json")["current"] == new
+            (Path(d) / f"snapshot-{key}.json").unlink()
+            push._save_snapshot(key, old)  # 模拟推出去的是改判前的版本
+            recheck()
+            assert [g for g, _ in sent] == ["g2"]  # flaky 这次失败
+            recheck()
+            assert [g for g, _ in sent] == ["g2", "flaky"] and "汉密尔顿" in sent[1][1]  # 补发失败的群，同一更正不重复
+            recheck()
+            results["now"] = before  # 两源一新一旧来回切换，回到推过的旧版本
+            recheck()
+            assert len(sent) == 2
+            st.sent[key] = ["g2"]  # 补发给失败的群时成绩已变：不覆盖基准，复查会给所有群推更正
+            asyncio.run(push.poll_result(race, "race", key, st, send))
+            assert f1._read(Path(d) / f"snapshot-{key}.json")["current"] == new
+    finally:
+        f1.DATA, f1.openf1_result, f1.fetch_session, f1.fetch_standings, push.SEND_GAP_SECONDS = saved
 
 
 def check_early_polls():
@@ -455,6 +578,6 @@ def check_news():
 
 if __name__ == "__main__":
     for fn in (check_preview_time, check_sprint_order, check_timezone,
-               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_session_results, check_title, check_title_bruteforce, check_clinch_preview, check_health, check_openf1_results, check_early_polls, check_news):
+               check_dedupe_and_catchup, check_grid, check_refresh_interval, check_result_window, check_parse, check_find_race, check_winners, check_session_results, check_title, check_title_bruteforce, check_clinch_preview, check_health, check_openf1_results, check_standings_catch_up, check_correction, check_early_polls, check_news):
         fn()
     print("OK")

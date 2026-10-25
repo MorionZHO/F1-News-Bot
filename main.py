@@ -47,7 +47,7 @@ COMMANDS = [  # 顺序即匹配优先级
 ]
 NO_DATA = "数据源暂时不可用，请稍后再试。"
 SESSION_CMDS = {"result": "race", "qualifying": "qualifying", "sprint": "sprint"}  # 指令 -> 结果类型
-SESSION_LABELS = {"race": "正赛", "qualifying": "排位赛", "sprint": "冲刺赛"}
+SESSION_LABELS = f1.SESSION_LABELS
 
 def parse(text: str) -> str:
     text = text.strip().lower()

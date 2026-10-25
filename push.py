@@ -1,6 +1,7 @@
 """定时推送：计算到期任务、群订阅状态与已发送记录（重启安全）。"""
 
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ RESULT_KINDS = {
     "race": (None, timedelta(hours=2), (6, 12, 24)),
 }
 EARLY_START, EARLY_RETRY = timedelta(minutes=35), timedelta(minutes=10)  # 见 early_polls
+RECHECK_FOR, RECHECK_EVERY = timedelta(days=4), timedelta(minutes=30)  # 见 recheck_jobs
 TICK_SECONDS = 30
 _EXTRAS: dict[str, str] = {}  # 预告 key -> 附加内容后的完整文本
 RACE_WEEK = (timedelta(days=4), timedelta(days=1))  # 正赛前 4 天到正赛后 1 天算比赛周（覆盖周四预告到周一）
@@ -183,18 +185,70 @@ def due_attempts(race: dict, now: datetime, state: State, tried: set) -> list[tu
             if when <= now <= when + ATTEMPT_GRACE and (key, n) not in tried and state.targets(key)]
 
 
+def result_ends(race: dict) -> list[tuple[str, str, datetime, datetime]]:
+    """(kind, 记录key, 预计结束时间, 第一次慢速尝试时间)。"""
+    return [(kind, key, when - timedelta(hours=RESULT_KINDS[kind][2][0]), when)
+            for kind, key, n, when in result_attempts(race) if n == 0]
+
+
+def _due(key: str, now: datetime, tries: dict, every: timedelta) -> bool:
+    return key not in tries or now - tries[key] >= every
+
+
 def early_polls(race: dict, now: datetime, state: State, tries: dict) -> list[tuple[str, str]]:
     """赛后提前取结果：预计结束 35 分钟后（OpenF1 免费账号 30 分钟后才能访问）起每 10 分钟取一次，
     直到推送成功（没有待发的群）或轮到第一次慢速尝试。慢速尝试照旧保留，作为两个数据源都出问题时的兜底。"""
-    out = []
-    for kind, key, n, when in result_attempts(race):
-        if n:
-            continue
-        end = when - timedelta(hours=RESULT_KINDS[kind][2][0])
-        last = tries.get(key)
-        if end + EARLY_START <= now < when and state.targets(key) and (last is None or now - last >= EARLY_RETRY):
-            out.append((kind, key))
-    return out
+    return [(kind, key) for kind, key, end, slow in result_ends(race)
+            if end + EARLY_START <= now < slow and state.targets(key) and _due(key, now, tries, EARLY_RETRY)]
+
+
+def recheck_jobs(race: dict, now: datetime, state: State, tries: dict) -> list[tuple[str, str]]:
+    """已推送的成绩在赛后 4 天内每 30 分钟复查一次。处罚、取消资格多在赛后几小时内公布，
+    车队申请复议（right of review）的期限是 96 小时，4 天能覆盖；之后的上诉结果太少见，交给官方积分榜。"""
+    return [(kind, key) for kind, key, end, _ in result_ends(race)
+            if state.sent.get(key) and end <= now <= end + RECHECK_FOR and _due(key, now, tries, RECHECK_EVERY)]
+
+
+def _snapshot_path(key: str) -> Path:
+    return f1.DATA / f"snapshot-{key}.json"
+
+
+def _digest(snap: dict) -> str:
+    return hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _save_snapshot(key: str, snap: dict) -> None:
+    """current = 最后一次成功推出去的版本；seen = 推出去过的全部版本摘要。"""
+    seen = (f1._read(_snapshot_path(key)) or {}).get("seen", [])
+    _snapshot_path(key).write_text(json.dumps({"current": snap, "seen": sorted({*seen, _digest(snap)})}),
+                                   encoding="utf-8")
+
+
+async def recheck_result(race: dict, kind: str, key: str, state: State, send) -> None:
+    """已推送的成绩被改判（处罚、取消资格等）时推一条【F1 News】更正，并清掉旧成绩缓存，之后的查询和积分榜都用新成绩。
+    更正全部推送成功才更新快照（重启或部分群失败都会补发，按新版本摘要去重）。
+    只比 OpenF1：Jolpica 入库晚，回退到它时拿到的可能是改判前的旧版，会被当成“新改判”推出去。
+    回到推送过的旧版本也不再推（OpenF1 偶尔一新一旧来回切换），避免来回更正。
+    ponytail: 只有 Jolpica 改了、OpenF1 没改的情况查不到，靠积分榜对比告警兜底；
+    申诉成功、成绩恢复成最初版本也会被当成来回切换而忽略，极少见。"""
+    result = await f1.openf1_result(race["round"], kind)
+    if not result:
+        return
+    new, saved = f1.result_snapshot(result), f1._read(_snapshot_path(key))
+    if saved is None:  # 本功能上线前就推送过的成绩：以当前版本为基准
+        return _save_snapshot(key, new)
+    digest = _digest(new)
+    if new == saved["current"] or digest in saved["seen"]:
+        return
+    f1.forget_session(race["round"], kind)
+    extra = ""
+    if kind != "qualifying":
+        st = await f1.fetch_standings("driver")
+        extra = f1.format_standings(st, "driver", top=5) if st and st["round"] == race["round"] else ""
+    fix = f"{key}-fix-{digest}"
+    await push_all(state, fix, f1.format_correction(race, kind, saved["current"], new, result, extra), send)
+    if not state.targets(fix):
+        _save_snapshot(key, new)
 
 
 async def push_all(state: State, key: str, text: str, send, only: list[str] | None = None) -> None:
@@ -241,6 +295,8 @@ async def poll_result(race: dict, kind: str, key: str, state: State, send) -> No
     if not result:
         return
     text = f1.format_session(result, kind)
+    if not state.sent.get(key):  # 赛后复查以最先推出去的版本为基准；补发给失败群时成绩若已变，由复查给所有群推更正
+        _save_snapshot(key, f1.result_snapshot(result))
     if kind == "race":
         standings = await f1.fetch_standings("driver")
         if standings and standings["round"] == race["round"]:  # 成绩出得快，积分榜可能还停在上一站，不能当成本站的发
@@ -268,6 +324,7 @@ async def run(cfg: dict, state: State, send) -> None:
     """主循环：每 30 秒检查一次到期任务；赛历缓存比赛周超过 3 小时、平时超过 12 小时则刷新。"""
     tried, last_refresh, last_news, grid_tries, grid_final = set(), None, None, {}, set()
     early_tries: dict[str, datetime] = {}
+    recheck_tries: dict[str, datetime] = {}
     while True:
         now = datetime.now(timezone.utc)
         try:
@@ -282,6 +339,9 @@ async def run(cfg: dict, state: State, send) -> None:
                 for kind, key in early_polls(race, now, state, early_tries):
                     early_tries[key] = now
                     await poll_result(race, kind, key, state, send)
+                for kind, key in recheck_jobs(race, now, state, recheck_tries):
+                    recheck_tries[key] = now
+                    await recheck_result(race, kind, key, state, send)
                 for kind, key, n in due_attempts(race, now, state, tried):
                     tried.add((key, n))
                     await poll_result(race, kind, key, state, send)
