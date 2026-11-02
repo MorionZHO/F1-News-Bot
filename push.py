@@ -245,8 +245,9 @@ async def recheck_result(race: dict, kind: str, key: str, state: State, send) ->
     if kind != "qualifying":
         st = await f1.fetch_standings("driver")
         extra = f1.format_standings(st, "driver", top=5) if st and st["round"] == race["round"] else ""
+    penalties = await f1.session_penalties(race, kind)  # 有则附上“5秒罚时：黄旗违规”；OpenF1 没写最终裁决时为空
     fix = f"{key}-fix-{digest}"
-    await push_all(state, fix, f1.format_correction(race, kind, saved["current"], new, result, extra), send)
+    await push_all(state, fix, f1.format_correction(race, kind, saved["current"], new, result, extra, penalties), send)
     if not state.targets(fix):
         _save_snapshot(key, new)
 

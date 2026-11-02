@@ -285,7 +285,13 @@ def check_session_results():
                          "", "【未起步】", "加斯利", "", "【取消资格】", "奥康"], lines[9:]
     rows[0]["FastestLap"] = {"rank": "1", "Time": {"time": "1:35.202"}}
     text = f1.format_session({"raceName": "Singapore Grand Prix", "Results": rows}, "race")
-    assert "\n\n【最快圈速】\n D1（红牛） 1:35.202\n\n【退赛】\n" in text, text
+    assert "\n\n【最快圈速】\nD1（红牛） 1:35.202\n\n【退赛】\n" in text, text
+    health._pending.clear(), health._last.clear()
+    assert f1.driver_name({"givenName": "Ryo", "familyName": "Nobody"}) == "Ryo Nobody"
+    assert any("缺少中文名" in t and "Nobody" in t for t in health._pending), health._pending
+    assert f1.driver_name({"givenName": "Ryo", "familyName": "Nobody"}) == "Ryo Nobody" and len(health._pending) == 1  # 冷却期内不重复告警
+    assert f1.driver_name({"givenName": "", "familyName": "Hamilton"}) == "汉密尔顿"  # 词表命中不告警
+    health._pending.clear(), health._last.clear()
 
 
 def check_health():
@@ -398,6 +404,27 @@ def check_openf1_results():
             assert q(17, Q1="1:36.5") == "1:36.5" and q(10, Q1="1:36", Q2="1:35.058", Q3="") == "Q3无有效圈速"
             full = f1.format_session(run()("qualifying"), "qualifying", top=None)  # 主动查询：列全部，标题不带“前N”
             assert full.startswith(f"{f1.gp_name(AUSTIN)} 排位赛结果\n1.") and "3. 勒克莱尔" in full, full
+            # OpenF1 删圈后 position=None：不能编造名次，归入【成绩取消】
+            deleted = run({"session_result?session_key=8": [
+                {"position": 1, "driver_number": 44, "duration": [95.0, 94.5, 94.035]},
+                {"position": 2, "driver_number": 1, "duration": [96.0, 95.2, 95.0]},
+                {"position": None, "driver_number": 16, "duration": [97.0, 96.0, 94.9], "dnf": False, "dns": False, "dsq": False},
+            ]})("qualifying")
+            assert deleted["Results"][2]["positionText"] == "EX" and "勒克莱尔" in f1.format_session(deleted, "qualifying", top=None).split("【成绩取消】")[1]
+            # Jolpica 同名次残留：只保留第一次，第二次当成绩取消
+            dup = {"raceName": AUSTIN["raceName"], "Results": [
+                _res("LIN", "Racing Bulls", 8, 0) | {"Q3": "1:17.117"},
+                _res("LAW", "Racing Bulls", 8, 0) | {"Q3": "1:17.029"},
+            ]}
+            dup_text = f1.format_qualifying(dup, top=None)
+            assert "8. 林德布拉德" in dup_text and "8. 劳森" not in dup_text and "【成绩取消】\n劳森" in dup_text, dup_text
+            saved_read, real_codes = f1._read, saved[2]
+            f1._read = lambda p: {"MRData": {"StandingsTable": {"StandingsLists": [{"DriverStandings": [
+                {"Driver": {"familyName": "X"}}, {"Driver": {"code": "VER", "familyName": "Verstappen"}}]}]}}}
+            try:
+                assert list(real_codes()) == ["VER"]  # 没有三字代码的替补不能拖垮 OpenF1
+            finally:
+                f1._read = saved_read
             assert (Path(d) / "openf1-fastest-7.json").exists()  # 最快圈已缓存
             (Path(d) / "openf1-fastest-7.json").unlink()
             text = f1.format_session(run({"laps?session_key=7": None})("race"), "race")  # 圈速取不到：照出成绩，不显示最快圈
@@ -420,7 +447,9 @@ def check_openf1_results():
         f1._RECENT.clear()
 
 
-FAMILY = {"VER": "Verstappen", "HAM": "Hamilton", "LEC": "Leclerc", "NOR": "Norris", "HUL": "Hülkenberg"}
+FAMILY = {"VER": "Verstappen", "HAM": "Hamilton", "LEC": "Leclerc", "NOR": "Norris", "HUL": "Hülkenberg",
+          "LAW": "Lawson", "LIN": "Lindblad", "GAS": "Gasly", "RUS": "Russell", "ANT": "Antonelli", "HAD": "Hadjar",
+          "PIA": "Piastri", "COL": "Colapinto"}
 
 
 def _res(code, team, pos, pts, text=None, status="Finished"):
@@ -465,6 +494,7 @@ def check_standings_catch_up():
         st = fake(base)  # 官方榜还停在第 17 站
         assert st["round"] == "18" and st["provisional"] == "官方积分榜尚未更新" and st["latest_team"]["lec"] == {"name": "Ferrari"}
         assert f1.format_standings(st, "driver").endswith("（官方积分榜尚未更新，暂按最新赛果计算）")
+        health._pending.clear(), health._last.clear()  # 测数据里姓氏是代码，会触发缺中文名告警，清掉再测积分不一致
         assert fake(official) is official and "provisional" not in official  # 官方榜已更新且一致：用官方榜
         off = json.loads(json.dumps(official))
         off["DriverStandings"][3]["Driver"]["driverId"] = "new_driver"  # 新车手在 Jolpica 的 id 和 OpenF1 拼的不同
@@ -489,14 +519,37 @@ def check_correction():
     assert "正赛结果\n" in query_text and "4. 诺里斯（迈凯轮）+12分" in query_text  # 查询列全部完赛者，无“前N”
     assert "5. 霍肯伯格" not in query_text and "【退赛】\n霍肯伯格" in query_text  # 退赛者只在【退赛】里
     unscored = before["Results"] + [_res("NEW", "Audi", 6, 0)]
-    assert "6.  NEW（奥迪）\n" in f1.format_session(race | {"Results": unscored}, "race", top=None) + "\n"  # 无分完赛者也列出，不带“+0分”
+    assert "6. NEW（奥迪）\n" in f1.format_session(race | {"Results": unscored}, "race", top=None) + "\n"  # 无分完赛者也列出，不带“+0分”
     old, new = f1.result_snapshot(before), f1.result_snapshot(after)
     assert old["HUL"] == new["HUL"] == [None, "0", "退赛"]  # 未完赛者名次不比，两源写法不同也不误报
     text = f1.format_correction(race, "race", old, new, after, "车手积分榜（略）")
     assert text == "\n".join([
         "【F1 News】", "「美国大奖赛 正赛成绩更新」", "", "赛后成绩有变动：",
-        "勒克莱尔：第3名 15分 → 第2名 18分", "诺里斯：第4名 12分 → 第3名 15分", "汉密尔顿：第2名 18分 → 取消资格 0分",
+        "汉密尔顿：第2名 18分 → 取消资格 0分",  # 只列受罚者；顺延加分的不单列
+        "其余 2 位车手名次相应调整",
         "", "车手积分榜（略）", "", "（官方成绩更新｜程序自动比对，内容可能有误）"]), text
+    # 排位赛删圈：只有名次变，没有取消资格标记；必须写出掉下去的人，不能只列往前递补的
+    q_old = {c: [str(i), "0", None] for i, c in enumerate(["HAM", "RUS", "LEC", "VER", "ANT", "NOR", "HAD", "LAW", "LIN", "GAS"], 1)}
+    q_new = {c: [str(i), "0", None] for i, c in enumerate(["HAM", "RUS", "LEC", "VER", "ANT", "NOR", "HAD", "LIN", "GAS", "LAW"], 1)}
+    q_res = {"Results": [_res(c, "X", i, 0) for i, c in enumerate(["HAM", "RUS", "LEC", "VER", "ANT", "NOR", "HAD", "LIN", "GAS", "LAW"], 1)]}
+    q_text = f1.format_correction(race, "qualifying", q_old, q_new, q_res)
+    assert "劳森：第8名 → 第10名（名次下降，多为赛后罚时）" in q_text and "林德布拉德" not in q_text and "其余 2 位" in q_text, q_text
+    # 正赛罚时：只列掉名次的人，并附上 race_control 里的罚时原因
+    p_old = {"PIA": ["7", "6", None], "COL": ["8", "4", None], "GAS": ["10", "1", None], "LAW": ["9", "2", None]}
+    p_new = {"PIA": ["13", "0", None], "COL": ["15", "0", None], "GAS": ["17", "0", None], "LAW": ["7", "6", None]}
+    p_res = {"Results": [_res("PIA", "McLaren", 13, 0), _res("COL", "Alpine", 15, 0),
+                         _res("GAS", "Alpine", 17, 0), _res("LAW", "Racing Bulls", 7, 6)]}
+    pens = f1.parse_penalties([
+        {"message": "FIA STEWARDS: 10 SECOND TIME PENALTY FOR CAR 81 (PIA) - YELLOW FLAG INFRINGEMENT (16:05:04)"},
+        {"message": "FIA STEWARDS: PENALTY SERVED - 5 SECOND TIME PENALTY FOR CAR 11 (PER) - SPEEDING IN THE PIT LANE"},
+        {"message": "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 43 (COL) - YELLOW FLAG INFRINGEMENT (16:04:53)"},
+    ])
+    assert pens == {"PIA": "10秒罚时：黄旗违规", "COL": "5秒罚时：黄旗违规"}, pens
+    p_text = f1.format_correction(race, "race", p_old, p_new, p_res, penalties=pens)
+    assert "皮亚斯特里：第7名 6分 → 第13名 0分（10秒罚时：黄旗违规）" in p_text, p_text
+    assert "科拉平托：第8名 4分 → 第15名 0分（5秒罚时：黄旗违规）" in p_text
+    assert "加斯利：第10名 1分 → 第17名 0分（名次下降，多为赛后罚时）" in p_text  # OpenF1 没写出最终罚时时的兜底
+    assert "劳森" not in p_text and "其余 1 位" in p_text, p_text  # 顺延受益的不单列
 
     sent, results = [], {"now": after}
     async def send(gid, msg):

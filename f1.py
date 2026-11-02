@@ -80,6 +80,7 @@ DRIVER_NAMES = {
     "Bearman": "贝尔曼", "Bortoleto": "博托莱托", "Hülkenberg": "霍肯伯格", "Ocon": "奥康",
     "Sainz": "塞恩斯", "Albon": "阿尔本", "Alonso": "阿隆索", "Tsunoda": "角田裕毅",
     "Stroll": "斯特罗尔", "Bottas": "博塔斯", "Pérez": "佩雷兹",
+    "Hirakawa": "平川亮",
     "Vettel": "维特尔", "Räikkönen": "莱科宁", "Ricciardo": "里卡多", "Rosberg": "罗斯伯格",
 }
 TEAM_NAMES = {
@@ -343,10 +344,12 @@ GRID_SOURCES = {  # 发车格挂在排位那一节下：kind -> (Jolpica 节次�
 
 
 def _code_drivers() -> dict:
-    """三字代码 -> Jolpica 车手信息，取自已缓存的车手积分榜（OpenF1 的姓不带重音，不能直接查 DRIVER_NAMES）。"""
+    """三字代码 -> Jolpica 车手信息，取自已缓存的车手积分榜（OpenF1 的姓不带重音，不能直接查 DRIVER_NAMES）。
+    替补车手可能没有三字代码，跳过，不能让整次 OpenF1 转换失败后回退到过时的 Jolpica。"""
     data = _read(DATA / "standings-driver.json")
     lists = data["MRData"]["StandingsTable"]["StandingsLists"] if data else []
-    return {r["Driver"]["code"]: r["Driver"] for r in (lists[0]["DriverStandings"] if lists else [])}
+    return {r["Driver"]["code"]: r["Driver"] for r in (lists[0]["DriverStandings"] if lists else [])
+            if r["Driver"].get("code")}
 
 
 def _code_names() -> dict:
@@ -424,18 +427,25 @@ async def _fastest_lap(key: int) -> list | None:
 
 
 def _result_row(r: dict, rank: int, d: dict, known: dict, kind: str, fastest: list | None) -> dict:
-    """OpenF1 的一行成绩 -> Jolpica 格式（format_results / format_qualifying 直接可用）。"""
+    """OpenF1 的一行成绩 -> Jolpica 格式（format_results / format_qualifying 直接可用）。
+    排位赛名次为空（圈速被删、取消资格）不能用 enumerate 序号顶替，否则会冒充有效名次。"""
     code = d.get("name_acronym", "")
     driver = known.get(code) or {"driverId": code.lower(), "code": code, "givenName": d.get("first_name", ""),
                                  "familyName": d.get("last_name", "")}
-    row = {"position": str(r["position"] or rank), "Driver": driver, "Constructor": {"name": d.get("team_name", "")}}
+    team = {"name": d.get("team_name", "")}
     if kind == "qualifying":
+        pos = r["position"]
+        text = ("D" if r.get("dsq") else "W" if r.get("dns") else "EX" if pos is None else str(pos))
+        row = {"position": str(pos or rank), "positionText": text,
+               "status": {"D": "Disqualified", "W": "Did not start", "EX": "Excluded"}.get(text, "Classified"),
+               "Driver": driver, "Constructor": team}
         return row | {f"Q{i}": _lap_str(t) for i, t in enumerate(r.get("duration") or [], 1) if t}
     pos = str(r["position"]) if r["position"] else None
     text, status = (("D", "Disqualified") if r["dsq"] else ("W", "Did not start") if r["dns"]
                     else (pos or "R", "Retired") if r["dnf"] or not pos else (pos, "Finished"))  # 没有名次也算未完赛
-    row |= {"positionText": text, "status": status, "laps": str(r.get("number_of_laps") or 0),
-            "points": _num(r.get("points") or 0)}
+    row = {"position": str(r["position"] or rank), "Driver": driver, "Constructor": team,
+           "positionText": text, "status": status, "laps": str(r.get("number_of_laps") or 0),
+           "points": _num(r.get("points") or 0)}
     if fastest and fastest[0] == r["driver_number"]:
         row["FastestLap"] = {"rank": "1", "Time": {"time": fastest[1]}}
     return row
@@ -502,7 +512,14 @@ def format_winners(race: dict, winners: list[dict], n: int = 5) -> str:
 
 
 def driver_name(d: dict) -> str:
-    return DRIVER_NAMES.get(d["familyName"], f"{d['givenName']} {d['familyName']}")
+    """词表没有的姓氏回退英文全名，并向测试群告警（同一姓氏 6 小时内只告一次），方便补中文名。
+    ponytail: 不自动翻译——F1 中文译名约定多，机翻容易错；词表 + 告警够用。"""
+    family = d["familyName"]
+    if family in DRIVER_NAMES:
+        return DRIVER_NAMES[family]
+    en = f"{d.get('givenName', '')} {family}".strip()
+    health.alert(f"driver-name:{family}", f"新车手缺少中文名：{en}，请在 DRIVER_NAMES 中补充")
+    return en
 
 
 def team_name(c: dict) -> str:
@@ -528,7 +545,7 @@ def _non_finish_kind(r: dict) -> str | None:
     """Jolpica 自 2024 年起不再给具体退赛原因，只剩 Retired / Did not start / Disqualified。
     跑够 90% 距离的退赛车手仍有名次，状态同样是 Retired，也算退赛。"""
     pos, status = r["positionText"], r["status"]
-    if pos in ("D", "E") or status == "Disqualified":
+    if pos in ("D", "E", "EX") or status in ("Disqualified", "Excluded"):
         return "取消资格"
     if pos in ("W", "F") or status in ("Did not start", "Withdrew"):
         return "未起步"
@@ -548,11 +565,26 @@ def _non_finishers(results: list[dict]) -> list[str]:
 
 
 def format_qualifying(race: dict, top: int | None = 10) -> str:
-    """top=None 列出全部车手（主动查询用）；自动推送只列前 10。"""
+    """top=None 列出全部车手（主动查询用）；自动推送只列前 10。
+    同名次只保留第一次出现的车手：Jolpica 在删圈后偶尔会留下两个相同名次（一个是被删圈的旧成绩）。
+    被取消 / 无名次的车手不进主列表，归入【成绩取消】，也不再显示已作废的圈速。"""
+    seen, classified, cancelled = set(), [], []
+    for r in race["Results"]:
+        text = r.get("positionText") or r["position"]
+        if text in ("D", "EX") or r.get("status") in ("Disqualified", "Excluded") or not str(r["position"]).isdigit():
+            cancelled.append(r)
+        elif r["position"] in seen:
+            cancelled.append(r)
+        else:
+            seen.add(r["position"])
+            classified.append(r)
+    rows = classified if top is None else classified[:top]
+    q2_cut = max((int(r["position"]) for r in classified if r.get("Q2")), default=0)
     lines = [f"{gp_name(race)} 排位赛结果" + (f"（前{top}）" if top else "")]
-    q2_cut = max((int(r["position"]) for r in race["Results"] if r.get("Q2")), default=0)
-    for r in race["Results"][:top]:
-        lines.append(f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）{_quali_time(r, q2_cut)}")
+    lines += [f"{r['position']}. {driver_name(r['Driver'])}（{team_name(r['Constructor'])}）{_quali_time(r, q2_cut)}"
+              for r in rows]
+    if cancelled and top is None:
+        lines += ["", f"【成绩取消】\n{'、'.join(driver_name(r['Driver']) for r in cancelled)}"]
     return "\n".join(lines)
 
 
@@ -724,6 +756,15 @@ def format_session(result: dict, kind: str, top: int | None = 10) -> str:
 
 # ---- 赛后改判 ----
 SESSION_LABELS = {"race": "正赛", "qualifying": "排位赛", "sprint": "冲刺赛"}
+# OpenF1 race_control：“FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 16 (LEC) - REASON (time)”
+PENALTY_RE = re.compile(
+    r"(?<!SERVED - )(?:(\d+)\s+SECOND\s+)?TIME PENALTY FOR CAR \d+ \((\w+)\)(?:\s*-\s*([^(-]+?))?\s*(?:\(|$)", re.I)
+PENALTY_REASON_ZH = {
+    "YELLOW FLAG INFRINGEMENT": "黄旗违规", "CAUSING A COLLISION": "造成碰撞",
+    "LEAVING THE TRACK AND GAINING AN ADVANTAGE": "离开赛道并获得优势",
+    "SPEEDING IN THE PIT LANE": "维修区超速", "TRACK LIMITS": "超出赛道限制",
+    "FALSE START": "抢跑", "COLLISION": "碰撞",
+}
 
 
 def _code(r: dict) -> str:
@@ -740,19 +781,75 @@ def result_snapshot(result: dict) -> dict:
     return out
 
 
-def format_correction(race: dict, kind: str, old: dict, new: dict, result: dict, extra: str = "") -> str:
-    """赛后改判的【F1 News】：列出积分或完赛状态变了的车手（没有的话列名次变化最靠前的 5 人），其余顺延的合并成一句。"""
+def parse_penalties(messages: list) -> dict[str, str]:
+    """race_control 消息 -> {车手代码: 中文罚时说明}。同一车手多次罚时取最后一次正式裁决。"""
+    out = {}
+    for m in messages or []:
+        text = m.get("message") or ""
+        if "PENALTY SERVED" in text.upper():
+            continue
+        hit = PENALTY_RE.search(text)
+        if not hit:
+            continue
+        secs, code, reason = hit.group(1), hit.group(2).upper(), (hit.group(3) or "").strip().upper()
+        why = next((zh for en, zh in PENALTY_REASON_ZH.items() if en in reason), "赛会处罚")
+        out[code] = f"{secs}秒罚时：{why}" if secs else f"罚时：{why}"
+    return out
+
+
+async def session_penalties(race: dict, kind: str) -> dict[str, str]:
+    """从 OpenF1 赛会消息里取罚时；取不到就空字典（墨西哥站那种只写“赛后调查”、不写最终罚时的情况）。"""
+    field, name = RESULT_SOURCES[kind]
+    if (field and field not in race) or (not field and "date" not in race):
+        return {}
+    key = await _openf1_key(race, to_utc(**race[field]) if field else race_start(race), name)
+    if key is None:
+        return {}
+    (DATA / f"openf1-control-{key}.json").unlink(missing_ok=True)  # 强制重拉，赛后裁决常晚于完赛缓存
+    msgs = await _fetch(f"{OPENF1}/race_control?session_key={key}", f"openf1-control-{key}.json")
+    return parse_penalties(msgs if isinstance(msgs, list) else [])
+
+
+def format_correction(race: dict, kind: str, old: dict, new: dict, result: dict,
+                      extra: str = "", penalties: dict | None = None) -> str:
+    """赛后改判的【F1 News】：只列名次变差 / 被取消 / 丢分的车手（顺延受益的不单列），并尽量附上罚时原因。
+    积分变多的人是别人受罚后的连带顺延，列出来会让人看不出谁才是被罚的。"""
     names, blank = {_code(r): driver_name(r["Driver"]) for r in result["Results"]}, [None, "0", None]
+    penalties = penalties or {}
+    pos = lambda s: int((s or blank)[0] or 99)
+
+    def worsened(c):
+        o, n = old.get(c), new.get(c)
+        if o is None:
+            return False
+        if n is None:
+            return True
+        if (o or blank)[2] != (n or blank)[2]:  # 完赛状态变了（取消资格等）
+            return True
+        if pos(n) > pos(o):
+            return True
+        return float((n or blank)[1]) < float((o or blank)[1])  # 掉分（罚时未改名次时极少见）
+
     changed = sorted((c for c in old.keys() | new.keys() if old.get(c) != new.get(c)),
-                     key=lambda c: int((new.get(c) or blank)[0] or 99))
-    major = [c for c in changed if (old.get(c) or blank)[1:] != (new.get(c) or blank)[1:]] or changed[:5]
+                     key=lambda c: pos(new.get(c)))
+    major = sorted((c for c in changed if worsened(c)),
+                   key=lambda c: (-(pos(new.get(c)) - pos(old.get(c))), pos(new.get(c))))
+    if not major:  # 极罕见：没有人掉名次，仍列新名次最靠前的几人
+        major = changed[:5]
 
     def desc(s):
         if s is None:
             return "无成绩"
         where = f"第{s[0]}名" + (f"（{s[2]}）" if s[2] else "") if s[0] else s[2]
         return where if kind == "qualifying" else f"{where} {s[1]}分"
-    lines = [f"{names.get(c, c)}：{desc(old.get(c))} → {desc(new.get(c))}" for c in major]
+
+    def line(c):
+        note = penalties.get(c) or (
+            "名次下降，多为赛后罚时" if pos(new.get(c)) > pos(old.get(c))
+            and (old.get(c) or blank)[2] == (new.get(c) or blank)[2] else "")
+        return f"{names.get(c, c)}：{desc(old.get(c))} → {desc(new.get(c))}" + (f"（{note}）" if note else "")
+
+    lines = [line(c) for c in major]
     if len(changed) > len(major):
         lines.append(f"其余 {len(changed) - len(major)} 位车手名次相应调整")
     return (f"【F1 News】\n「{gp_name(race)} {SESSION_LABELS[kind]}成绩更新」\n\n赛后成绩有变动：\n" + "\n".join(lines)
@@ -760,11 +857,13 @@ def format_correction(race: dict, kind: str, old: dict, new: dict, result: dict,
 
 
 def forget_session(round_: str, kind: str) -> None:
-    """改判后清掉旧成绩：内存里的短时缓存、Jolpica 的成绩缓存文件、最快圈缓存（处罚可能取消圈速）。
-    ponytail: 最快圈缓存按 OpenF1 session_key 命名，这里不查 key，全部清掉，下次查询时重算。"""
+    """改判后清掉旧成绩：内存里的短时缓存、Jolpica 的成绩缓存文件、最快圈 / 赛会消息缓存（处罚可能取消圈速）。
+    ponytail: 最快圈和 race_control 按 OpenF1 session_key 命名，这里不查 key，全部清掉，下次查询时重算。"""
     _RECENT.pop((round_, kind), None)
     (DATA / f"{kind}-{round_}.json").unlink(missing_ok=True)
     for p in DATA.glob("openf1-fastest-*.json"):
+        p.unlink()
+    for p in DATA.glob("openf1-control-*.json"):
         p.unlink()
 
 
