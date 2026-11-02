@@ -333,15 +333,15 @@ def check_health():
         with log.open("a") as f:
             f.write("Accepted publickey for ubuntu from 1.1.1.1 port 2 ssh2\nAccepted publickey for ubuntu from 2.2.2.2")
         health.check_ssh({"1.1.1.1"}, log)
-        assert not health._pending  # 常用 IP 不告警，半行留到下次
+        assert not health._pending  # 公钥登录不告警（半行也留到下次）
         with log.open("a") as f:
             f.write(" port 3 ssh2\n")
         health.check_ssh({"1.1.1.1"}, log)
-        assert len(health._pending) == 1 and "2·2·2·2 以 ubuntu 身份" in health._pending[0], health._pending
+        assert not health._pending  # 陌生 IP 的公钥登录也不告，避免本人换 IP 刷屏
         log.unlink()
         log.write_text("Accepted password for root from 3.3.3.3 port 4 ssh2\n")  # 日志轮转后从头读
         health.check_ssh({"1.1.1.1"}, log)
-        assert "3·3·3·3" in health._pending[-1], health._pending
+        assert "3·3·3·3" in health._pending[-1] and "密码" in health._pending[-1], health._pending
 
     reset()
     health.check_disk(Path(__file__).parent)

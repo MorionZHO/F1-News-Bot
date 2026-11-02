@@ -6,5 +6,5 @@ remind_minutes = [30]
 alert_group = ""
 # 突发新闻推送到哪些群：群 openid 列表，或 "all" 表示全部订阅群；不填则不推
 news_groups = []
-# 常用的 SSH 登录来源 IP，其他 IP 登录成功会告警
+# SSH 密码登录白名单（公钥登录不告警）；服务器应已禁止密码，一般保持空列表
 ssh_trusted_ips = []

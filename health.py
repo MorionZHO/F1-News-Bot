@@ -98,12 +98,15 @@ def new_auth_lines(path: Path = AUTH_LOG) -> list[str]:
 
 
 def check_ssh(trusted: set[str], path: Path = AUTH_LOG) -> None:
+    """只告警密码登录：服务器已禁止密码时出现即异常；公钥登录不告（本人 IP 常换，密钥在谁手里才是关键）。
+    trusted 仍保留，给以后若要收紧公钥告警用。"""
     for line in new_auth_lines(path):
         m = ACCEPTED.search(line)
-        if m and m[3] not in trusted:
-            ip = m[3].replace(".", "·")  # 免得被 QQ 当成网址拒发
-            alert(f"ssh:{m[3]}", f"有人从 {ip} 以 {m[2]} 身份 SSH 登录了服务器（{m[1]}），"
-                                 "不是常用 IP。不是你本人请立即检查；是你本人就把该 IP 加进 ssh_trusted_ips")
+        if not m or m[1] != "password" or m[3] in trusted:
+            continue
+        ip = m[3].replace(".", "·")  # 免得被 QQ 当成网址拒发
+        alert(f"ssh:{m[3]}", f"有人从 {ip} 以 {m[2]} 身份用密码 SSH 登录了服务器，"
+                             "本机应已禁止密码登录，请立即检查")
 
 
 async def run(cfg: dict, send) -> None:
