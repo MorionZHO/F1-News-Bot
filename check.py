@@ -411,6 +411,10 @@ def check_openf1_results():
                 {"position": None, "driver_number": 16, "duration": [97.0, 96.0, 94.9], "dnf": False, "dns": False, "dsq": False},
             ]})("qualifying")
             assert deleted["Results"][2]["positionText"] == "EX" and "勒克莱尔" in f1.format_session(deleted, "qualifying", top=None).split("【成绩取消】")[1]
+            # Classified 是排位有效成绩，快照不能记成退赛，否则会误推“全员退赛”改判
+            ok_row = deleted["Results"][0]
+            assert ok_row["status"] == "Classified" and f1._non_finish_kind(ok_row) is None
+            assert f1.result_snapshot(deleted)["HAM"] == ["1", "0", None], f1.result_snapshot(deleted)
             # Jolpica 同名次残留：只保留第一次，第二次当成绩取消
             dup = {"raceName": AUSTIN["raceName"], "Results": [
                 _res("LIN", "Racing Bulls", 8, 0) | {"Q3": "1:17.117"},

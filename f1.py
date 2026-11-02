@@ -543,13 +543,14 @@ def format_results(race: dict, title: str = "正赛", everyone: bool = False) ->
 
 def _non_finish_kind(r: dict) -> str | None:
     """Jolpica 自 2024 年起不再给具体退赛原因，只剩 Retired / Did not start / Disqualified。
-    跑够 90% 距离的退赛车手仍有名次，状态同样是 Retired，也算退赛。"""
+    跑够 90% 距离的退赛车手仍有名次，状态同样是 Retired，也算退赛。
+    Classified 是排位赛有效成绩（本程序写入），不能当成退赛，否则改判复查会把全员判成退赛。"""
     pos, status = r["positionText"], r["status"]
     if pos in ("D", "E", "EX") or status in ("Disqualified", "Excluded"):
         return "取消资格"
     if pos in ("W", "F") or status in ("Did not start", "Withdrew"):
         return "未起步"
-    if pos in ("R", "N") or status not in ("Finished", "Lapped") and not status.startswith("+"):
+    if pos in ("R", "N") or (status not in ("Finished", "Lapped", "Classified") and not status.startswith("+")):
         return "退赛"
     return None
 
