@@ -240,6 +240,10 @@ async def recheck_result(race: dict, kind: str, key: str, state: State, send) ->
     digest = _digest(new)
     if new == saved["current"] or digest in saved["seen"]:
         return
+    # 名次和积分都没变、只有退赛/取消等标签在抖（例如曾把排位 Classified 误标成退赛）：静默对齐，不推
+    standing = lambda s: {c: (v[0], v[1]) for c, v in s.items()}
+    if standing(new) == standing(saved["current"]):
+        return _save_snapshot(key, new)
     f1.forget_session(race["round"], kind)
     extra = ""
     if kind != "qualifying":

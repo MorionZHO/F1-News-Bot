@@ -585,6 +585,14 @@ def check_correction():
             results["now"] = before  # 两源一新一旧来回切换，回到推过的旧版本
             recheck()
             assert len(sent) == 2
+            # 只有退赛标签在抖、名次积分不变：静默对齐快照，不推（seen 不含正确版，避免被去重短路）
+            results["now"] = after
+            labeled = {c: [v[0], v[1], "退赛"] for c, v in new.items()}
+            (Path(d) / f"snapshot-{key}.json").write_text(
+                json.dumps({"current": labeled, "seen": [push._digest(labeled)]}), encoding="utf-8")
+            n_sent = len(sent)
+            recheck()
+            assert len(sent) == n_sent and f1._read(Path(d) / f"snapshot-{key}.json")["current"] == new
             st.sent[key] = ["g2"]  # 补发给失败的群时成绩已变：不覆盖基准，复查会给所有群推更正
             asyncio.run(push.poll_result(race, "race", key, st, send))
             assert f1._read(Path(d) / f"snapshot-{key}.json")["current"] == new
