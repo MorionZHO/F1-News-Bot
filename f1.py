@@ -81,6 +81,7 @@ DRIVER_NAMES = {
     "Sainz": "塞恩斯", "Albon": "阿尔本", "Alonso": "阿隆索", "Tsunoda": "角田裕毅",
     "Stroll": "斯特罗尔", "Bottas": "博塔斯", "Pérez": "佩雷兹",
     "Hirakawa": "平川亮",
+    "Câmara": "卡马拉", "Camara": "卡马拉",  # OpenF1 姓氏常不带重音
     "Vettel": "维特尔", "Räikkönen": "莱科宁", "Ricciardo": "里卡多", "Rosberg": "罗斯伯格",
 }
 TEAM_NAMES = {
@@ -318,7 +319,9 @@ async def fetch_standings(kind: str):
     if st is not current:
         st["provisional"] = "与官方积分榜有出入" if current and current["round"] == race["round"] else "官方积分榜尚未更新"
     if kind == "driver":
-        st["latest_team"] = {r["Driver"]["driverId"]: r["Constructor"] for r in result["Results"]}
+        # 跳过空车队名：OpenF1 替补有时缺 team_name，不能盖住积分榜里已有的车队
+        st["latest_team"] = {r["Driver"]["driverId"]: r["Constructor"] for r in result["Results"]
+                             if r.get("Constructor", {}).get("name")}
     return st
 
 
@@ -877,8 +880,10 @@ def format_standings(st: dict, kind: str, top: int | None = None) -> str:
     for r in st[key][:top]:
         if kind == "constructor":
             who = team_name(r["Constructor"])
-        else:  # 车手可能中途转队或替补，优先取最近一站的车队
-            team = st.get("latest_team", {}).get(r["Driver"]["driverId"], r["Constructors"][-1])
+        else:  # 车手可能中途转队或替补，优先取最近一站的车队；空车队名则回退积分榜
+            team = st.get("latest_team", {}).get(r["Driver"]["driverId"])
+            if not team or not team.get("name"):
+                team = (r.get("Constructors") or [{"name": ""}])[-1]
             who = f"{driver_name(r['Driver'])}（{team_name(team)}）"
         lines.append(f"{r['position']}. {who} {r['points']}分")
     if st.get("provisional"):

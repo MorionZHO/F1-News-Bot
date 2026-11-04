@@ -291,6 +291,14 @@ def check_session_results():
     assert any("缺少中文名" in t and "Nobody" in t for t in health._pending), health._pending
     assert f1.driver_name({"givenName": "Ryo", "familyName": "Nobody"}) == "Ryo Nobody" and len(health._pending) == 1  # 冷却期内不重复告警
     assert f1.driver_name({"givenName": "", "familyName": "Hamilton"}) == "汉密尔顿"  # 词表命中不告警
+    assert f1.driver_name({"givenName": "Rafael", "familyName": "Câmara"}) == "卡马拉"
+    assert f1.driver_name({"givenName": "Rafael", "familyName": "Camara"}) == "卡马拉"  # OpenF1 无重音
+    # 最近一站若给出空车队名，积分榜仍应显示 Jolpica 里的车队，不能变成「平川亮（）」
+    empty_team = {"round": "19", "DriverStandings": [{
+        "position": "20", "points": "0", "Driver": {"driverId": "ryo_hirakawa", "familyName": "Hirakawa", "givenName": "Ryo"},
+        "Constructors": [{"name": "Haas F1 Team"}]}],
+        "latest_team": {"ryo_hirakawa": {"name": ""}}}
+    assert "平川亮（哈斯）" in f1.format_standings(empty_team, "driver"), f1.format_standings(empty_team, "driver")
     health._pending.clear(), health._last.clear()
 
 
