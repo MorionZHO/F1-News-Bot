@@ -10,6 +10,8 @@ import health
 URL = "https://raw.githubusercontent.com/MorionZHO/F1-News-Bot/news-feed/news.json"  # GitHub 有 5 分钟缓存
 INTERVAL = timedelta(minutes=5)
 MAX_AGE = timedelta(days=3)  # 超过 3 天的不推，防止去重记录丢失后重发旧闻
+# 首次见到的条目若发布时间已超过此时长，视为旧闻换链接重写（新 id），只记已读不推
+FIRST_SEEN_MAX_AGE = timedelta(hours=24)
 MAX_ITEMS = 5
 FIELDS = {"title_zh": 40, "summary_zh": 150, "source": 30}  # 字段 -> 最大长度
 LINK = re.compile(r"https?://|www\.|[\w-]+\.(com|net|org|cn|io|co|uk|me|tv)\b", re.I)  # QQ 拒发网址，也防广告链接

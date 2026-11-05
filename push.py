@@ -310,13 +310,21 @@ async def poll_result(race: dict, kind: str, key: str, state: State, send) -> No
 
 
 async def poll_news(cfg: dict, state: State, send) -> None:
-    """news_groups 为群 openid 列表或 "all"（全部订阅群）；不填则不推新闻。按新闻 id 去重。"""
+    """news_groups 为群 openid 列表或 "all"（全部订阅群）；不填则不推新闻。按新闻 id 去重。
+    云端任务有时会把同一事件用新链接重写（新 id）；对「首次见到但发布时间已超过 24 小时」的条目只记已读不推。"""
     groups = cfg.get("news_groups")
     if not groups:
         return
     data = await f1._fetch(news.URL, "news.json")
-    for it in news.valid_items(data, datetime.now(timezone.utc)):
-        await push_all(state, f"news-{it['id']}", news.format_news(it), send, None if groups == "all" else groups)
+    now = datetime.now(timezone.utc)
+    only = None if groups == "all" else groups
+    for it in news.valid_items(data, now):
+        key = f"news-{it['id']}"
+        if not state.sent.get(key) and now - it["published"] > news.FIRST_SEEN_MAX_AGE:
+            state.sent[key] = [g for g, v in state.groups.items() if v["sub"]]  # 全部订阅群记已读，避免换 only 后又推
+            state.save()
+            continue
+        await push_all(state, key, news.format_news(it), send, only)
 
 
 def refresh_interval(races: list[dict], now: datetime) -> timedelta:

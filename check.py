@@ -638,25 +638,27 @@ def check_news():
                                           "（Autosport · 周二 10-13 17:20｜程序自动抓取，内容可能有误）")
     assert news.valid_items({"items": bad[4:]}, now) == [] and news.valid_items(None, now) == []
 
+    fresh = good | {"id": "b" * 40, "published": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    stale = good | {"id": "c" * 40, "published": (datetime.now(timezone.utc) - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")}
     async def fake_fetch(url, cache):
-        return {"items": [good]}
+        return {"items": [fresh, stale]}
     sent = []
     async def send(gid, text):
-        sent.append(gid)
+        sent.append((gid, text))
     old_fetch, old_gap, f1._fetch, push.SEND_GAP_SECONDS = f1._fetch, push.SEND_GAP_SECONDS, fake_fetch, 0
-    old_age, news.MAX_AGE = news.MAX_AGE, timedelta(days=3650)  # poll_news 用真实当前时间
     try:
         with tempfile.TemporaryDirectory() as d:
             st = push.State(Path(d))
             st.register("test"), st.register("other")
             for _ in range(2):  # 第二轮按 id 去重，不重复推
                 asyncio.run(push.poll_news({"news_groups": ["test"]}, st, send))
-            assert sent == ["test"], sent
+            assert [g for g, _ in sent] == ["test"], sent  # 只推新鲜的；30 小时前的旧闻换皮不推
+            assert set(st.sent[f"news-{'c' * 40}"]) == {"test", "other"}  # 旧闻对全部订阅群记已读
             asyncio.run(push.poll_news({}, st, send))  # 不配置则不推
             asyncio.run(push.poll_news({"news_groups": "all"}, st, send))
-            assert sent == ["test", "other"], sent
+            assert [g for g, _ in sent] == ["test", "other"], sent
     finally:
-        f1._fetch, push.SEND_GAP_SECONDS, news.MAX_AGE = old_fetch, old_gap, old_age
+        f1._fetch, push.SEND_GAP_SECONDS = old_fetch, old_gap
     health._pending.clear(), health._last.clear()
 
 
